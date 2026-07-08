@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "project": "{{SERVER_NAME}}",
+  "description": "Machine-readable status and role registry. This JSON file is the source of truth; STATUS_ENUM_REGISTRY.md is generated from it.",
+  "groups": [
+    {
+      "name": "ExampleWorkflowStatus",
+      "type": "workflow_status",
+      "values": [
+        { "code": "draft", "desc": "Draft", "next": ["reviewing"] },
+        { "code": "reviewing", "desc": "Reviewing", "next": ["approved", "rejected"] },
+        { "code": "approved", "desc": "Approved", "next": ["published"] },
+        { "code": "rejected", "desc": "Rejected", "next": ["draft"] },
+        { "code": "published", "desc": "Published", "next": [] }
+      ]
+    },
+    {
+      "name": "AccountStatus",
+      "type": "account_status",
+      "values": [
+        { "code": "active", "desc": "Active", "next": ["disabled"] },
+        { "code": "disabled", "desc": "Disabled", "next": ["active"] }
+      ]
+    }
+  ]
+}
+
