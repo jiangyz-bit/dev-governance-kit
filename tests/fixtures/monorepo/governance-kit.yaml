@@ -1,0 +1,19 @@
+schemaVersion: 1
+project:
+  name: demo
+  repositoryMode: monorepo
+components:
+  server:
+    profile: java-springboot-mybatis
+    path: apps/server
+  admin:
+    profile: react-admin
+    path: apps/admin
+  client:
+    profile: wechat-miniprogram
+    path: apps/miniprogram
+contracts:
+  statusRegistryOwner: server
+  apiContractOwner: server
+generation:
+  conflictPolicy: report

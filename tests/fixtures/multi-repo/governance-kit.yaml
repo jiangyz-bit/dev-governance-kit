@@ -1,0 +1,19 @@
+schemaVersion: 1
+project:
+  name: demo
+  repositoryMode: multi-repo
+components:
+  server:
+    profile: java-springboot-mybatis
+    path: demo-server
+  admin:
+    profile: react-admin
+    path: demo-admin
+  client:
+    profile: wechat-miniprogram
+    path: demo-miniprogram
+contracts:
+  statusRegistryOwner: server
+  apiContractOwner: server
+generation:
+  conflictPolicy: report
