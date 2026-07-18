@@ -14,6 +14,23 @@ test("README documents both supported workflows", async () => {
   const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
   assert.match(readme, /governance-kit apply/);
   assert.match(readme, /governance-kit validate/);
-  assert.match(readme, /已有项目/);
-  assert.match(readme, /新项目/);
+  for (const heading of [
+    "## 它能解决什么问题",
+    "## 3 分钟快速开始",
+    "## 执行后会得到什么",
+    "## 已有项目是否安全",
+    "## 交给 AI Agent 使用"
+  ]) {
+    assert.match(readme, new RegExp(heading));
+  }
+  for (const legacyText of [
+    "V1",
+    "第一阶段",
+    "第二阶段",
+    "第三阶段",
+    "MIGRATION_FROM_V1_TEMPLATES"
+  ]) {
+    assert.doesNotMatch(readme, new RegExp(legacyText));
+  }
+  assert.ok(readme.split(/\r?\n/).length <= 170, "README 应保持简洁");
 });

@@ -1,33 +1,32 @@
 # dev-governance-kit
 
-面向 AI Agent 产品开发的组合式工程治理底座。
+让 AI Agent 按统一工程规则开发项目，而不是每次从零猜测目录、状态、API、数据库和发布要求。
 
-本项目把技术无关规则、组件职责、技术栈差异和项目组合拆成独立层，并提供安全、幂等、可验证的 CLI。它既能为已有项目叠加治理能力，也能为新项目准备统一的工程约束。
+它可以把 `AGENTS.md`、工程规则、状态注册表和验证脚本安全地接入单仓库或多仓库项目。
 
-## 五层架构
+## 它能解决什么问题
 
-- `core/`：技术无关的权威工程规则。
-- `templates/`：server、admin、client 等组件职责模板。
-- `profiles/`：Java、React、微信小程序等技术栈命令和变量。
-- `blueprints/`：经过维护的组件组合。
-- `tooling/`：清单加载、组合规划、`apply` 和 `validate`。
+- 给 AI Agent 一套明确、可执行的项目规则，减少随意分层和无关重构。
+- 统一后端、管理端和客户端对 API、状态、权限及数据库的理解。
+- 自动生成仓库内的治理文档和检查脚本，避免只靠口头约定。
+- 接入已有项目时先预览冲突，不直接覆盖用户文件。
+- 重复执行结果一致，并能检查占位符、配置和状态注册表是否漂移。
 
-状态注册表继续由后端 `docs/status-enums.json` 统一维护；Markdown 注册表是生成物。
+## 3 分钟快速开始
 
-## 环境要求
+### 1. 安装
 
-- Node.js 20 或更高版本
-- npm
+需要 Node.js 20 或更高版本。
 
 ```powershell
+git clone https://github.com/jiangyz-bit/dev-governance-kit.git
+cd dev-governance-kit
 npm install
 ```
 
-本文使用源码调用形式 `node tooling/cli.mjs`。安装或链接 package bin 后，等价命令是 `governance-kit apply` 和 `governance-kit validate`。
+### 2. 描述你的项目
 
-## 项目清单
-
-在目标工作区根目录创建 `governance-kit.yaml`：
+在产品工作区根目录创建 `governance-kit.yaml`：
 
 ```yaml
 schemaVersion: 1
@@ -51,76 +50,104 @@ generation:
   conflictPolicy: report
 ```
 
-完整字段说明见 [项目清单参考](docs/MANIFEST_REFERENCE.md)。
+对应目录：
 
-## 已有项目
-
-先执行 dry-run，查看将创建、更新或跳过的文件：
-
-```powershell
-node tooling/cli.mjs apply --workspace C:\Projects\demo --dry-run
+```text
+demo/
+  governance-kit.yaml
+  demo-server/
+  demo-admin/
+  demo-miniprogram/
 ```
 
-确认后应用：
-
-```powershell
-node tooling/cli.mjs apply --workspace C:\Projects\demo
-node tooling/cli.mjs validate --workspace C:\Projects\demo
-```
-
-工具默认不覆盖用户文件。已有 `AGENTS.md`、来源不明文件、不同来源版本文件和已有状态源会进入冲突报告，由用户或 Agent 人工合并。
-
-旧版手工模板迁移见 [V1 模板迁移说明](docs/MIGRATION_FROM_V1_TEMPLATES.md)。
-
-## 新项目
-
-第一阶段不替代 Spring Initializr、Vite 或微信开发者工具。先用成熟脚手架创建组件目录，再创建 `governance-kit.yaml`，执行：
+### 3. 先预览，再应用
 
 ```powershell
 node tooling/cli.mjs apply --workspace C:\Projects\demo --dry-run
 node tooling/cli.mjs apply --workspace C:\Projects\demo
+```
+
+### 4. 验证
+
+```powershell
 node tooling/cli.mjs validate --workspace C:\Projects\demo
 ```
 
-完整 `init` 命令属于第三阶段，将在后续接入上游脚手架。
+安装或链接 package bin 后，也可以使用 `governance-kit apply` 和 `governance-kit validate`。
 
-## JSON 输出
+## 执行后会得到什么
 
-自动化和 AI Agent 可以使用稳定 JSON：
+每个组件会按职责获得对应文件，例如：
 
-```powershell
-node tooling/cli.mjs apply --workspace C:\Projects\demo --dry-run --json
-node tooling/cli.mjs validate --workspace C:\Projects\demo --json
+```text
+demo-server/
+  AGENTS.md
+  docs/
+    governance/
+    API_RULES.md
+    DATABASE_RULES.md
+    LOCAL_RUNBOOK.md
+    RELEASE_CHECKLIST.md
+    status-enums.json
+    STATUS_ENUM_REGISTRY.md
+  scripts/
+
+demo-admin/
+  AGENTS.md
+  docs/
+  scripts/
+
+demo-miniprogram/
+  AGENTS.md
+  docs/
+  scripts/
 ```
 
-退出码：
+后端负责业务事实、API 契约和状态注册表；前端和客户端使用后端定义的稳定状态 code。
 
-- `0`：成功。
-- `1`：存在验证错误或文件冲突。
-- `2`：CLI 参数错误。
+## 已有项目是否安全
+
+安全。工具默认使用 `report` 冲突策略：
+
+| 情况 | 处理方式 |
+|---|---|
+| 文件不存在 | 创建 |
+| 工具托管且版本一致 | 安全更新 |
+| 内容没有变化 | 跳过 |
+| 用户文件或来源不明 | 报告冲突，不覆盖 |
+| 已有 `status-enums.json` | 保留并报告，不覆盖业务状态 |
+| 来源版本不一致 | 停止更新该文件并报告 |
+
+建议始终先运行 `--dry-run`。存在冲突时，先人工确认或让 Agent 给出合并建议，再执行正式应用。
+
+## 交给 AI Agent 使用
+
+可以直接复制下面这段提示词：
+
+> 使用 dev-governance-kit 给当前项目接入工程治理。先读取 README、当前 AGENTS.md 和相关 docs，识别组件、技术栈、Git 仓库边界以及真实启动/测试命令。创建或检查 governance-kit.yaml，先执行 apply --dry-run，并向我报告将创建的文件和全部冲突。不要覆盖用户文件。确认无误后执行 apply、validate 和项目自身测试，最后说明修改内容、验证结果与剩余风险。
+
+Agent 需要把 `--workspace` 指向产品工作区，而不是本工具仓库。
 
 ## 当前支持范围
 
-- `java-springboot-mybatis`
-- `react-admin`
-- `wechat-miniprogram`
-- `monorepo`
-- `multi-repo`
+| 组件 | Profile |
+|---|---|
+| Java 后端 | `java-springboot-mybatis` |
+| React 管理端 | `react-admin` |
+| 微信小程序 | `wechat-miniprogram` |
 
-Go、Node 后端、Vue、OpenAPI 生成和完整项目脚手架不在第一阶段范围内。
+支持 `monorepo` 和 `multi-repo`。多仓库模式下，工作区根目录不需要是 Git 仓库，各组件可以维护独立 `.git`。
 
-## 状态工作流
+## 工作原理
 
-后端修改 `docs/status-enums.json` 后，在各组件仓库运行：
+Core 定义通用工程规则，Template 定义组件职责，Profile 提供技术栈命令和变量，Blueprint 描述推荐组合，Tooling 负责安全应用和验证。每条规则只保留一个权威来源，再生成到具体项目中。
 
-```powershell
-node scripts/generate-status-registry.mjs
-node scripts/check-status-registry.mjs
-```
+## 进阶文档
 
-非相邻仓库通过 `SERVER_REPO_DIR` 指定后端目录。
+- [governance-kit.yaml 字段说明](docs/MANIFEST_REFERENCE.md)
+- [组合式 AI 工程技术底座设计](docs/superpowers/specs/2026-07-18-composable-ai-engineering-foundation-design.md)
 
-## 开发验证
+## 项目开发验证
 
 ```powershell
 npm ci
