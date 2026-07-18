@@ -9,10 +9,10 @@ import { createFixtureWorkspace } from "./helpers/workspace.mjs";
 const kitRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(kitRoot, "tooling", "cli.mjs");
 
-function runCli(args) {
+function runNode(args, cwd = kitRoot) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [cliPath, ...args], {
-      cwd: kitRoot,
+    const child = spawn(process.execPath, args, {
+      cwd,
       windowsHide: true
     });
     let stdout = "";
@@ -28,6 +28,10 @@ function runCli(args) {
     child.on("error", reject);
     child.on("close", (code) => resolve({ code, stdout, stderr }));
   });
+}
+
+function runCli(args) {
+  return runNode([cliPath, ...args]);
 }
 
 test("apply dry-run emits JSON and writes nothing", async (t) => {
@@ -47,6 +51,13 @@ test("apply then validate succeeds", async (t) => {
   const applied = await runCli(["apply", "--workspace", workspace, "--json"]);
   assert.equal(applied.code, 0);
   assert.equal(JSON.parse(applied.stdout).ok, true);
+
+  const serverRoot = path.join(workspace, "demo-server");
+  const generated = await runNode(["scripts/generate-status-registry.mjs"], serverRoot);
+  assert.equal(generated.code, 0);
+  const checked = await runNode(["scripts/check-status-registry.mjs"], serverRoot);
+  assert.equal(checked.code, 0);
+  assert.match(checked.stdout, /Status registry check passed\./);
 
   const validated = await runCli(["validate", "--workspace", workspace, "--json"]);
   assert.equal(validated.code, 0);
