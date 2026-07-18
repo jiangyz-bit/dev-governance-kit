@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import test from "node:test";
@@ -90,4 +90,37 @@ test("human-readable mode is Chinese", async (t) => {
   assert.equal(result.code, 0);
   assert.match(result.stdout, /创建：/);
   assert.match(result.stdout, /冲突：/);
+});
+
+test("monorepo apply is idempotent and validates", async (t) => {
+  const workspace = await createFixtureWorkspace(t, "monorepo");
+  const first = await runCli(["apply", "--workspace", workspace, "--json"]);
+  assert.equal(first.code, 0);
+  const second = await runCli(["apply", "--workspace", workspace, "--json"]);
+  assert.equal(second.code, 0);
+  const secondReport = JSON.parse(second.stdout).report;
+  assert.equal(secondReport.created.length, 0);
+  assert.equal(secondReport.updated.length, 0);
+  const validated = await runCli(["validate", "--workspace", workspace, "--json"]);
+  assert.equal(validated.code, 0);
+});
+
+test("multi-repo apply preserves component Git metadata", async (t) => {
+  const workspace = await createFixtureWorkspace(t, "multi-repo");
+  const markers = [];
+  for (const component of ["demo-server", "demo-admin", "demo-miniprogram"]) {
+    const marker = path.join(workspace, component, ".git", "governance-test-marker");
+    await mkdir(path.dirname(marker), { recursive: true });
+    await writeFile(marker, component, "utf8");
+    markers.push({ marker, component });
+  }
+
+  const applied = await runCli(["apply", "--workspace", workspace, "--json"]);
+  assert.equal(applied.code, 0);
+  const validated = await runCli(["validate", "--workspace", workspace, "--json"]);
+  assert.equal(validated.code, 0);
+  for (const { marker, component } of markers) {
+    assert.equal(await readFile(marker, "utf8"), component);
+  }
+  await assert.rejects(readFile(path.join(workspace, ".git"), "utf8"));
 });

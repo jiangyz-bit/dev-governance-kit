@@ -9,3 +9,11 @@ test("package exposes the governance CLI and supported Node version", async () =
   assert.equal(pkg.engines.node, ">=20");
   assert.equal(pkg.scripts.test, "node --test tests/*.test.mjs");
 });
+
+test("README documents both supported workflows", async () => {
+  const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+  assert.match(readme, /governance-kit apply/);
+  assert.match(readme, /governance-kit validate/);
+  assert.match(readme, /已有项目/);
+  assert.match(readme, /新项目/);
+});
