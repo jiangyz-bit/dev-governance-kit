@@ -155,3 +155,7 @@ npm test
 npm audit
 node tooling/cli.mjs --help
 ```
+
+## 开源许可
+
+本项目基于 [MIT License](LICENSE) 开源，可自由使用、修改和分发，但需保留原始版权与许可声明。
