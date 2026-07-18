@@ -1,0 +1,26 @@
+id: java-springboot-mybatis
+version: 1
+componentTypes:
+  - server
+commands:
+  startDatabase: docker compose up -d
+  start: mvn spring-boot:run
+  test: mvn test
+  build: mvn package
+  statusGenerate: node scripts/generate-status-registry.mjs
+  statusCheck: node scripts/check-status-registry.mjs
+capabilities:
+  migration: flyway
+  dataAccess: mybatis
+templateVariables:
+  LANGUAGE_AND_VERSION: Java 21
+  WEB_FRAMEWORK: Spring Boot
+  ORM_OR_DATA_ACCESS: MyBatis
+  MIGRATION_TOOL: Flyway
+  DATABASE: MySQL
+  BUILD_TOOL: Maven
+  RUNTIME: Java 21
+  DATABASE_RUNTIME: Docker Compose
+  START_DATABASE_COMMAND: docker compose up -d
+  START_SERVER_COMMAND: mvn spring-boot:run
+  TEST_COMMAND: mvn test

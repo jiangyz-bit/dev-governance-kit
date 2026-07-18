@@ -1,0 +1,14 @@
+id: java-react-wechat
+version: 1
+components:
+  server:
+    profile: java-springboot-mybatis
+  admin:
+    profile: react-admin
+  client:
+    profile: wechat-miniprogram
+defaults:
+  repositoryMode: multi-repo
+contracts:
+  statusRegistryOwner: server
+  apiContractOwner: server

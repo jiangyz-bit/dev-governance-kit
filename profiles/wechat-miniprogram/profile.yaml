@@ -1,0 +1,15 @@
+id: wechat-miniprogram
+version: 1
+componentTypes:
+  - client
+commands:
+  install: npm install
+  test: npm test
+  statusGenerate: node scripts/generate-status-registry.mjs
+  statusCheck: node scripts/check-status-registry.mjs
+capabilities:
+  platform: wechat-miniprogram
+  publicClient: true
+templateVariables:
+  INSTALL_COMMAND: npm install
+  TEST_COMMAND: npm test

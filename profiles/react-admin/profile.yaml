@@ -1,0 +1,25 @@
+id: react-admin
+version: 1
+componentTypes:
+  - admin
+commands:
+  install: npm install
+  start: npm run dev
+  test: npm test
+  typecheck: npm run typecheck
+  build: npm run build
+  statusGenerate: node scripts/generate-status-registry.mjs
+  statusCheck: node scripts/check-status-registry.mjs
+capabilities:
+  ui: operations-console
+  language: typescript
+templateVariables:
+  FRONTEND_FRAMEWORK: React
+  LANGUAGE: TypeScript
+  BUILD_TOOL: Vite
+  UI_LIBRARY: Project-selected component library
+  INSTALL_COMMAND: npm install
+  DEV_COMMAND: npm run dev
+  TEST_COMMAND: npm test
+  TYPECHECK_COMMAND: npm run typecheck
+  BUILD_COMMAND: npm run build
