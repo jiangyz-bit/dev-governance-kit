@@ -1,91 +1,92 @@
-# Governance Overlay MVP Implementation Plan
+# 治理叠加 MVP 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **面向执行 Agent：** 必须使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans`，逐项实施本计划。所有步骤使用复选框（`- [ ]`）跟踪进度。
 
-**Goal:** Build a safe, idempotent Node.js CLI that validates a multi-stack project manifest and applies the existing Java, React Admin, and WeChat Mini Program governance layers to empty or existing workspaces without overwriting user-owned files.
+**目标：** 构建一个安全、幂等的 Node.js CLI，用于验证多技术栈项目清单，并将现有 Java、React Admin 和微信小程序治理层应用到空工作区或已有工作区，同时不覆盖用户拥有的文件。
 
-**Architecture:** The MVP uses `governance-kit.yaml` as the workspace entry point, JSON Schema as the configuration contract, and a catalog of machine-readable Profiles and Blueprints. A pure planning layer resolves Core rules, component templates, and Profiles into file operations; a separate apply layer performs atomic writes only for new or tool-managed files, while validate reports configuration, placeholder, status-registry, and generated-file errors.
+**架构：** MVP 以 `governance-kit.yaml` 作为工作区入口，以 JSON Schema 作为配置契约，并维护机器可读的 Profile 和 Blueprint 目录。纯规划层负责把 Core 规则、组件模板和 Profile 解析为文件操作；独立的应用层只对新文件或工具托管文件执行原子写入；验证层负责报告配置、占位符、状态注册表和生成文件错误。
 
-**Tech Stack:** Node.js 20+, ECMAScript modules, npm, `yaml`, `ajv`, Node.js built-in `node:test`.
+**技术栈：** Node.js 20+、ECMAScript modules、npm、`yaml`、`ajv`、Node.js 内置 `node:test`。
 
-## Global Constraints
+## 全局约束
 
-- Phase one supports `java-springboot-mybatis`, `react-admin`, and `wechat-miniprogram`.
-- Both `monorepo` and `multi-repo` workspace layouts must be supported.
-- The workspace root must not be assumed to be a Git repository.
-- The default conflict policy is `report`; user-owned or source-unknown files must never be overwritten.
-- Every resolved target path must remain inside the configured workspace.
-- Repeated `apply` runs with unchanged inputs must produce no further changes.
-- Core owns technology-independent rules; Templates own component responsibilities; Profiles own stack-specific commands and mappings.
-- The backend component remains the only status-registry source of truth.
-- Existing templates remain available until composition tests prove equivalent generated output.
-- No implementation for Go, Node backend, Vue, OpenAPI generation, or full project scaffolding is included in this plan.
-
----
-
-## File Map
-
-### Runtime and public entry points
-
-- Create `package.json`: Node version, dependencies, CLI bin, and test scripts.
-- Create `tooling/cli.mjs`: argument parsing and `apply` / `validate` command dispatch.
-- Create `tooling/index.mjs`: stable programmatic exports.
-
-### Configuration contracts and loading
-
-- Create `schemas/governance-kit.schema.json`: workspace manifest contract.
-- Create `schemas/profile.schema.json`: Profile contract.
-- Create `schemas/blueprint.schema.json`: Blueprint contract.
-- Create `tooling/lib/errors.mjs`: stable error codes and serialized diagnostics.
-- Create `tooling/lib/files.mjs`: UTF-8 loading, safe path resolution, hashing, and atomic writes.
-- Create `tooling/lib/schema-validator.mjs`: Ajv compilation and validation.
-- Create `tooling/lib/catalog.mjs`: Profile and Blueprint discovery.
-- Create `tooling/lib/manifest.mjs`: manifest loading and cross-reference checks.
-
-### Composition and application
-
-- Create `tooling/lib/template.mjs`: strict `{{VARIABLE}}` rendering and unresolved-placeholder detection.
-- Create `tooling/lib/planner.mjs`: pure composition plan generation.
-- Create `tooling/lib/apply.mjs`: dry-run, managed-file update, conflict skip, and report generation.
-- Create `tooling/lib/validate.mjs`: workspace validation orchestration.
-- Create `tooling/lib/status-registry.mjs`: CLI-side status source validation and expected Markdown rendering.
-
-### Governance content
-
-- Create `core/rules/*.md`: technology-independent rules migrated from the approved design source.
-- Create `templates/shared/docs/governance/README.md`: generated governance index.
-- Create `profiles/*/profile.yaml`: machine-readable metadata for the three existing Profiles.
-- Create `blueprints/java-react-wechat.yaml`: first supported component combination.
-- Keep existing generated-project status scripts unchanged during the compatibility window; shared packaging is phase two.
-
-### Tests and fixtures
-
-- Create `tests/helpers/workspace.mjs`: isolated temporary workspace helpers.
-- Create `tests/schema-validator.test.mjs`: Schema and cross-reference tests.
-- Create `tests/catalog.test.mjs`: catalog discovery and compatibility tests.
-- Create `tests/template.test.mjs`: strict rendering tests.
-- Create `tests/planner.test.mjs`: layer composition and path-safety tests.
-- Create `tests/apply.test.mjs`: conflict and idempotency tests.
-- Create `tests/status-registry.test.mjs`: shared status validation and rendering tests.
-- Create `tests/cli.test.mjs`: end-to-end CLI tests.
-- Create `tests/fixtures/monorepo/governance-kit.yaml`: monorepo fixture.
-- Create `tests/fixtures/multi-repo/governance-kit.yaml`: multi-repo fixture.
+- 第一阶段支持 `java-springboot-mybatis`、`react-admin` 和 `wechat-miniprogram`。
+- 必须同时支持 `monorepo` 和 `multi-repo` 工作区布局。
+- 不得假设工作区根目录本身是 Git 仓库。
+- 默认冲突策略为 `report`；不得覆盖用户拥有或来源不明的文件。
+- 所有解析后的目标路径必须位于配置的工作区内部。
+- 输入不变时，重复执行 `apply` 不得产生新的修改。
+- Core 负责技术无关规则；Template 负责组件职责；Profile 负责技术栈专属命令和映射。
+- 后端组件仍是状态注册表的唯一事实源。
+- 在组合测试证明生成结果等价之前，保留现有模板。
+- 面向人类和 Agent 的说明文档以中文为主体；文件名、命令、代码标识符、Schema 字段和错误码保留英文。
+- 本计划不实现 Go、Node 后端、Vue、OpenAPI 生成或完整项目脚手架。
 
 ---
 
-### Task 1: Establish the Node.js package and test harness
+## 文件映射
 
-**Files:**
-- Create: `package.json`
-- Create: `tooling/index.mjs`
-- Create: `tests/package.test.mjs`
-- Create: `package-lock.json` through `npm install`
+### 运行时与公开入口
 
-**Interfaces:**
-- Produces: npm scripts `test`, `test:unit`, and `governance-kit`; package bin `governance-kit`.
-- Produces: public exports that later tasks fill without changing import paths.
+- 创建 `package.json`：定义 Node 版本、依赖、CLI bin 和测试脚本。
+- 创建 `tooling/cli.mjs`：解析参数并分发 `apply` / `validate` 命令。
+- 创建 `tooling/index.mjs`：提供稳定的程序化导出。
 
-- [ ] **Step 1: Write the failing package-contract test**
+### 配置契约与加载
+
+- 创建 `schemas/governance-kit.schema.json`：工作区清单契约。
+- 创建 `schemas/profile.schema.json`：Profile 契约。
+- 创建 `schemas/blueprint.schema.json`：Blueprint 契约。
+- 创建 `tooling/lib/errors.mjs`：稳定错误码和可序列化诊断信息。
+- 创建 `tooling/lib/files.mjs`：UTF-8 加载、安全路径解析、哈希和原子写入。
+- 创建 `tooling/lib/schema-validator.mjs`：Ajv 编译与验证。
+- 创建 `tooling/lib/catalog.mjs`：发现 Profile 和 Blueprint。
+- 创建 `tooling/lib/manifest.mjs`：加载清单并检查交叉引用。
+
+### 组合与应用
+
+- 创建 `tooling/lib/template.mjs`：严格渲染 `{{VARIABLE}}` 并检测未解析占位符。
+- 创建 `tooling/lib/planner.mjs`：生成无副作用的组合计划。
+- 创建 `tooling/lib/apply.mjs`：执行 dry-run、托管文件更新、冲突跳过和报告生成。
+- 创建 `tooling/lib/validate.mjs`：编排工作区验证。
+- 创建 `tooling/lib/status-registry.mjs`：在 CLI 侧验证状态源并渲染预期 Markdown。
+
+### 治理内容
+
+- 创建 `core/rules/*.md`：从已批准设计迁移技术无关规则。
+- 创建 `templates/shared/docs/governance/README.md`：生成的治理索引。
+- 创建 `profiles/*/profile.yaml`：三个现有 Profile 的机器可读元数据。
+- 创建 `blueprints/java-react-wechat.yaml`：首个受支持的组件组合。
+- 兼容窗口内保持现有生成项目的状态脚本不变；共享封装放到第二阶段。
+
+### 测试与 fixture
+
+- 创建 `tests/helpers/workspace.mjs`：隔离的临时工作区辅助函数。
+- 创建 `tests/schema-validator.test.mjs`：Schema 和交叉引用测试。
+- 创建 `tests/catalog.test.mjs`：目录发现和兼容性测试。
+- 创建 `tests/template.test.mjs`：严格渲染测试。
+- 创建 `tests/planner.test.mjs`：分层组合和路径安全测试。
+- 创建 `tests/apply.test.mjs`：冲突和幂等性测试。
+- 创建 `tests/status-registry.test.mjs`：状态验证和渲染测试。
+- 创建 `tests/cli.test.mjs`：CLI 端到端测试。
+- 创建 `tests/fixtures/monorepo/governance-kit.yaml`：monorepo fixture。
+- 创建 `tests/fixtures/multi-repo/governance-kit.yaml`：multi-repo fixture。
+
+---
+
+### 任务 1：建立 Node.js 包和测试基础
+
+**文件：**
+- 创建：`package.json`
+- 创建：`tooling/index.mjs`
+- 创建：`tests/package.test.mjs`
+- 通过 `npm install` 创建：`package-lock.json`
+
+**接口：**
+- 产出：npm scripts `test`、`test:unit` 和 `governance-kit`；package bin `governance-kit`。
+- 产出：后续任务补充实现但不改变导入路径的公开导出。
+
+- [ ] **步骤 1：编写失败的包契约测试**
 
 ```js
 // tests/package.test.mjs
@@ -102,13 +103,13 @@ test("package exposes the governance CLI and supported Node version", async () =
 });
 ```
 
-- [ ] **Step 2: Run the test and verify it fails**
+- [ ] **步骤 2：运行测试并确认失败**
 
-Run: `node --test tests/package.test.mjs`
+运行：`node --test tests/package.test.mjs`
 
-Expected: FAIL with `ENOENT` for `package.json`.
+预期：FAIL，`package.json` 返回 `ENOENT`。
 
-- [ ] **Step 3: Create the package contract and public module**
+- [ ] **步骤 3：创建包契约和公开模块**
 
 ```json
 {
@@ -141,7 +142,7 @@ export { loadProjectManifest } from "./lib/manifest.mjs";
 export { validateWorkspace } from "./lib/validate.mjs";
 ```
 
-Create a temporary CLI stub so npm can resolve the declared bin before Task 7:
+创建临时 CLI stub，使 npm 能在任务 7 之前解析已声明的 bin：
 
 ```js
 #!/usr/bin/env node
@@ -150,17 +151,17 @@ process.stderr.write("governance-kit CLI is not initialized\n");
 process.exitCode = 2;
 ```
 
-- [ ] **Step 4: Install locked dependencies and run the package test**
+- [ ] **步骤 4：安装锁定依赖并运行包测试**
 
-Run: `npm install`
+运行：`npm install`
 
-Expected: exit 0 and a new `package-lock.json`.
+预期：退出码为 0，并生成 `package-lock.json`。
 
-Run: `node --test --test-name-pattern="package exposes" tests/package.test.mjs`
+运行：`node --test --test-name-pattern="package exposes" tests/package.test.mjs`
 
-Expected: PASS, 1 test passed.
+预期：PASS，1 个测试通过。
 
-- [ ] **Step 5: Commit**
+- [ ] **步骤 5：提交**
 
 ```powershell
 git add package.json package-lock.json tooling/index.mjs tooling/cli.mjs tests/package.test.mjs
@@ -169,24 +170,24 @@ git commit -m "build: establish governance CLI package"
 
 ---
 
-### Task 2: Define and validate manifests, Profiles, and Blueprints
+### 任务 2：定义并验证项目清单、Profile 和 Blueprint
 
-**Files:**
-- Create: `schemas/governance-kit.schema.json`
-- Create: `schemas/profile.schema.json`
-- Create: `schemas/blueprint.schema.json`
-- Create: `tooling/lib/errors.mjs`
-- Create: `tooling/lib/files.mjs`
-- Create: `tooling/lib/schema-validator.mjs`
-- Create: `tests/schema-validator.test.mjs`
+**文件：**
+- 创建：`schemas/governance-kit.schema.json`
+- 创建：`schemas/profile.schema.json`
+- 创建：`schemas/blueprint.schema.json`
+- 创建：`tooling/lib/errors.mjs`
+- 创建：`tooling/lib/files.mjs`
+- 创建：`tooling/lib/schema-validator.mjs`
+- 创建：`tests/schema-validator.test.mjs`
 
-**Interfaces:**
-- Produces: `GovernanceError(code: string, message: string, details?: object)`.
-- Produces: `readYamlFile(filePath: string): Promise<object>`.
-- Produces: `resolveInside(rootDir: string, relativePath: string): string`.
-- Produces: `validateSchema(schemaName: "governance-kit" | "profile" | "blueprint", value: object): void`.
+**接口：**
+- 产出：`GovernanceError(code: string, message: string, details?: object)`。
+- 产出：`readYamlFile(filePath: string): Promise<object>`。
+- 产出：`resolveInside(rootDir: string, relativePath: string): string`。
+- 产出：`validateSchema(schemaName: "governance-kit" | "profile" | "blueprint", value: object): void`。
 
-- [ ] **Step 1: Write failing Schema and safe-path tests**
+- [ ] **步骤 1：编写失败的 Schema 和安全路径测试**
 
 ```js
 // tests/schema-validator.test.mjs
@@ -230,26 +231,26 @@ test("rejects paths outside the workspace", () => {
 });
 ```
 
-- [ ] **Step 2: Run the tests and verify module-not-found failures**
+- [ ] **步骤 2：运行测试并确认模块不存在错误**
 
-Run: `node --test tests/schema-validator.test.mjs`
+运行：`node --test tests/schema-validator.test.mjs`
 
-Expected: FAIL because `schema-validator.mjs` and `files.mjs` do not exist.
+预期：FAIL，因为 `schema-validator.mjs` 和 `files.mjs` 尚不存在。
 
-- [ ] **Step 3: Create exact JSON Schemas**
+- [ ] **步骤 3：创建精确的 JSON Schema**
 
-`schemas/governance-kit.schema.json` must:
+`schemas/governance-kit.schema.json` 必须：
 
-- require `schemaVersion`, `project`, `components`, `contracts`, and `generation`;
-- set `schemaVersion` to integer constant `1`;
-- restrict `repositoryMode` to `monorepo` or `multi-repo`;
-- require at least one component;
-- restrict component keys to `server`, `admin`, or `client`;
-- require each component to contain only `profile` and `path`;
-- restrict `conflictPolicy` to constant `report`;
-- disallow unknown properties at every object level.
+- 要求存在 `schemaVersion`、`project`、`components`、`contracts` 和 `generation`；
+- 将 `schemaVersion` 限定为整数常量 `1`；
+- 将 `repositoryMode` 限定为 `monorepo` 或 `multi-repo`；
+- 要求至少存在一个组件；
+- 将组件键限定为 `server`、`admin` 或 `client`；
+- 要求每个组件只能包含 `profile` 和 `path`；
+- 将 `conflictPolicy` 限定为常量 `report`；
+- 在每一层对象中禁止未知属性。
 
-`schemas/profile.schema.json` must require:
+`schemas/profile.schema.json` 必须要求：
 
 ```json
 {
@@ -270,9 +271,9 @@ Expected: FAIL because `schema-validator.mjs` and `files.mjs` do not exist.
 }
 ```
 
-`schemas/blueprint.schema.json` must require `id`, `version`, `components`, `defaults`, and `contracts`; component values require a `profile`; repository mode and owner fields use the same enums as the project manifest.
+`schemas/blueprint.schema.json` 必须要求 `id`、`version`、`components`、`defaults` 和 `contracts`；组件值必须包含 `profile`；仓库模式和所有者字段使用与项目清单相同的枚举。
 
-- [ ] **Step 4: Implement errors, UTF-8 YAML loading, safe paths, and Ajv validation**
+- [ ] **步骤 4：实现错误对象、UTF-8 YAML 加载、安全路径和 Ajv 验证**
 
 ```js
 // tooling/lib/errors.mjs
@@ -355,17 +356,17 @@ export function validateSchema(schemaName, value) {
 }
 ```
 
-- [ ] **Step 5: Run focused and full tests**
+- [ ] **步骤 5：运行针对性测试和完整测试**
 
-Run: `node --test tests/schema-validator.test.mjs`
+运行：`node --test tests/schema-validator.test.mjs`
 
-Expected: PASS, 3 tests passed.
+预期：PASS，3 个测试通过。
 
-Run: `npm test`
+运行：`npm test`
 
-Expected: all current tests pass.
+预期：当前全部测试通过。
 
-- [ ] **Step 6: Commit**
+- [ ] **步骤 6：提交**
 
 ```powershell
 git add schemas tooling/lib/errors.mjs tooling/lib/files.mjs tooling/lib/schema-validator.mjs tests/schema-validator.test.mjs
@@ -374,29 +375,29 @@ git commit -m "feat: define governance configuration contracts"
 
 ---
 
-### Task 3: Add Core rules and the first machine-readable catalog
+### 任务 3：添加 Core 规则和首个机器可读目录
 
-**Files:**
-- Create: `core/rules/architecture.md`
-- Create: `core/rules/api.md`
-- Create: `core/rules/database.md`
-- Create: `core/rules/security.md`
-- Create: `core/rules/testing.md`
-- Create: `core/rules/agent-workflow.md`
-- Create: `templates/shared/docs/governance/README.md`
-- Create: `profiles/java-springboot-mybatis/profile.yaml`
-- Create: `profiles/react-admin/profile.yaml`
-- Create: `profiles/wechat-miniprogram/profile.yaml`
-- Create: `blueprints/java-react-wechat.yaml`
-- Create: `tooling/lib/catalog.mjs`
-- Create: `tests/catalog.test.mjs`
+**文件：**
+- 创建：`core/rules/architecture.md`
+- 创建：`core/rules/api.md`
+- 创建：`core/rules/database.md`
+- 创建：`core/rules/security.md`
+- 创建：`core/rules/testing.md`
+- 创建：`core/rules/agent-workflow.md`
+- 创建：`templates/shared/docs/governance/README.md`
+- 创建：`profiles/java-springboot-mybatis/profile.yaml`
+- 创建：`profiles/react-admin/profile.yaml`
+- 创建：`profiles/wechat-miniprogram/profile.yaml`
+- 创建：`blueprints/java-react-wechat.yaml`
+- 创建：`tooling/lib/catalog.mjs`
+- 创建：`tests/catalog.test.mjs`
 
-**Interfaces:**
-- Consumes: `readYamlFile()` and `validateSchema()` from Task 2.
-- Produces: `loadCatalog(kitRoot: string): Promise<{ profiles: Map<string, Profile>, blueprints: Map<string, Blueprint> }>`.
-- Produces: catalog entries with internal `_sourceDir` absolute paths.
+**接口：**
+- 使用：任务 2 的 `readYamlFile()` 和 `validateSchema()`。
+- 产出：`loadCatalog(kitRoot: string): Promise<{ profiles: Map<string, Profile>, blueprints: Map<string, Blueprint> }>`。
+- 产出：包含内部绝对路径 `_sourceDir` 的目录条目。
 
-- [ ] **Step 1: Write failing catalog tests**
+- [ ] **步骤 1：编写失败的目录测试**
 
 ```js
 // tests/catalog.test.mjs
@@ -428,47 +429,47 @@ test("blueprint profiles support their assigned component types", async () => {
 });
 ```
 
-- [ ] **Step 2: Run the tests and verify they fail**
+- [ ] **步骤 2：运行测试并确认失败**
 
-Run: `node --test tests/catalog.test.mjs`
+运行：`node --test tests/catalog.test.mjs`
 
-Expected: FAIL because the catalog module and YAML catalog files do not exist.
+预期：FAIL，因为目录模块和 YAML 目录文件尚不存在。
 
-- [ ] **Step 3: Add Core rule documents**
+- [ ] **步骤 3：添加 Core 规则文档**
 
-Create one focused document per approved rule group:
+为每个已批准的规则组创建一份职责单一的文档：
 
-- `architecture.md`: backend fact source, controller/service/data boundaries, adapters, transactions, idempotency, and component ownership.
-- `api.md`: centralized clients, DTO boundaries, stable errors, compatibility, pagination, batch result semantics, and caller checks.
-- `database.md`: migrations only, immutable released migrations, clean initialization, stable status codes, indexes, compatibility windows, and rollback analysis.
-- `security.md`: secret separation, explicit environments, production protections, backend authorization, safe errors, and real-data prohibition.
-- `testing.md`: the change-type validation matrix and evidence-based completion.
-- `agent-workflow.md`: reading order, impact analysis, non-destructive Git behavior, cross-component synchronization, and final reporting.
+- `architecture.md`：后端事实源、controller/service/data 边界、adapter、事务、幂等和组件所有权。
+- `api.md`：集中式客户端、DTO 边界、稳定错误、兼容性、分页、批量结果语义和调用方检查。
+- `database.md`：只使用 migration、已发布 migration 不可修改、干净初始化、稳定状态码、索引、兼容窗口和回滚分析。
+- `security.md`：密钥分离、显式环境、生产保护、后端授权、安全错误和禁止真实数据。
+- `testing.md`：按变更类型划分的验证矩阵和基于证据的完成标准。
+- `agent-workflow.md`：读取顺序、影响分析、非破坏性 Git 行为、跨组件同步和最终报告。
 
-Each file must begin with a stable rule ID prefix in its title, such as:
+每个文件的标题必须以稳定规则 ID 前缀开头，例如：
 
 ```markdown
-# CORE-ARCH: Architecture Rules
+# CORE-ARCH：架构规则
 
-These technology-independent rules are authoritative for every generated component.
+这些技术无关规则对每个生成组件具有权威性。
 ```
 
-Every normative Core rule must be preceded by a globally unique machine-readable marker:
+每条规范性 Core 规则前必须包含全局唯一、机器可读的标记：
 
 ```markdown
 <!-- rule-id: CORE-ARCH-001 -->
-- Controllers adapt HTTP requests and responses; they do not own business rules.
+- Controller 只适配 HTTP 请求和响应，不承载业务规则。
 ```
 
-Rule IDs use `CORE-<GROUP>-<THREE_DIGITS>`. Templates and Profiles may link to a Core rule ID but must not declare a second `rule-id` marker for it.
+规则 ID 使用 `CORE-<GROUP>-<THREE_DIGITS>`。Template 和 Profile 可以引用 Core 规则 ID，但不得为同一规则再次声明 `rule-id` 标记。
 
-The shared governance index must link each copied Core rule using relative paths and state that generated rule files are not edited manually.
+共享治理索引必须通过相对路径链接每份复制的 Core 规则，并说明生成的规则文件不得手工编辑。
 
-- [ ] **Step 4: Add exact phase-one Profile metadata**
+- [ ] **步骤 4：添加精确的第一阶段 Profile 元数据**
 
-Use the existing Profile README commands and rules as the source. Each `profile.yaml` must provide all variables referenced by its selected component templates.
+以现有 Profile README 的命令和规则为来源。每个 `profile.yaml` 必须提供所选组件模板引用的全部变量。
 
-The Java Profile must declare:
+Java Profile 必须声明：
 
 ```yaml
 id: java-springboot-mybatis
@@ -499,7 +500,7 @@ templateVariables:
   TEST_COMMAND: mvn test
 ```
 
-The React Profile must declare:
+React Profile 必须声明：
 
 ```yaml
 id: react-admin
@@ -529,7 +530,7 @@ templateVariables:
   BUILD_COMMAND: npm run build
 ```
 
-The WeChat Profile must declare:
+微信小程序 Profile 必须声明：
 
 ```yaml
 id: wechat-miniprogram
@@ -549,9 +550,9 @@ templateVariables:
   TEST_COMMAND: npm test
 ```
 
-These are Profile defaults for newly created projects. Applying to an existing project requires the Agent to verify that the selected Profile matches the repository's actual build files and scripts before writing; the MVP does not infer or rewrite package scripts.
+这些是新项目的 Profile 默认值。应用到已有项目时，Agent 必须在写入前确认所选 Profile 与仓库实际构建文件和脚本一致；MVP 不推断或改写 package scripts。
 
-- [ ] **Step 5: Add the first Blueprint and catalog loader**
+- [ ] **步骤 5：添加首个 Blueprint 和目录加载器**
 
 ```yaml
 # blueprints/java-react-wechat.yaml
@@ -616,17 +617,17 @@ export async function loadCatalog(kitRoot) {
 }
 ```
 
-- [ ] **Step 6: Run catalog and full tests**
+- [ ] **步骤 6：运行目录测试和完整测试**
 
-Run: `node --test tests/catalog.test.mjs`
+运行：`node --test tests/catalog.test.mjs`
 
-Expected: PASS, 2 tests passed.
+预期：PASS，2 个测试通过。
 
-Run: `npm test`
+运行：`npm test`
 
-Expected: all tests pass.
+预期：全部测试通过。
 
-- [ ] **Step 7: Commit**
+- [ ] **步骤 7：提交**
 
 ```powershell
 git add core templates/shared profiles blueprints tooling/lib/catalog.mjs tests/catalog.test.mjs
@@ -635,28 +636,28 @@ git commit -m "feat: add core rules and phase-one catalog"
 
 ---
 
-### Task 4: Load project manifests and build a pure composition plan
+### 任务 4：加载项目清单并构建无副作用的组合计划
 
-**Files:**
-- Create: `tooling/lib/manifest.mjs`
-- Create: `tooling/lib/template.mjs`
-- Create: `tooling/lib/planner.mjs`
-- Create: `tests/template.test.mjs`
-- Create: `tests/planner.test.mjs`
-- Create: `tests/fixtures/multi-repo/governance-kit.yaml`
-- Create: `tests/fixtures/monorepo/governance-kit.yaml`
+**文件：**
+- 创建：`tooling/lib/manifest.mjs`
+- 创建：`tooling/lib/template.mjs`
+- 创建：`tooling/lib/planner.mjs`
+- 创建：`tests/template.test.mjs`
+- 创建：`tests/planner.test.mjs`
+- 创建：`tests/fixtures/multi-repo/governance-kit.yaml`
+- 创建：`tests/fixtures/monorepo/governance-kit.yaml`
 
-**Interfaces:**
-- Consumes: catalog maps, Schema validation, and safe-path resolution.
-- Produces: `loadProjectManifest(workspaceDir: string, kitRoot: string): Promise<ProjectContext>`.
-- Produces: `renderStrict(source: string, variables: Record<string, string>): string`.
-- Produces: `buildApplyPlan(context: ProjectContext): Promise<ApplyPlan>`.
-- `ProjectContext` uses `{ kitRoot, workspaceDir, manifest, catalog, components }`, where each `components[type]` entry is `{ type, rootDir, profile }`.
-- `ApplyPlan` uses `{ context, operations }`.
-- `ApplyPlan.operations` entries use `{ component, sourcePath, targetPath, content, sourceId, sourceVersion, writePolicy }`.
-- `writePolicy` is `"managed"` for marked generated text and `"create-only"` for `docs/status-enums.json`.
+**接口：**
+- 使用：目录映射、Schema 验证和安全路径解析。
+- 产出：`loadProjectManifest(workspaceDir: string, kitRoot: string): Promise<ProjectContext>`。
+- 产出：`renderStrict(source: string, variables: Record<string, string>): string`。
+- 产出：`buildApplyPlan(context: ProjectContext): Promise<ApplyPlan>`。
+- `ProjectContext` 使用 `{ kitRoot, workspaceDir, manifest, catalog, components }`，其中每个 `components[type]` 条目为 `{ type, rootDir, profile }`。
+- `ApplyPlan` 使用 `{ context, operations }`。
+- `ApplyPlan.operations` 条目使用 `{ component, sourcePath, targetPath, content, sourceId, sourceVersion, writePolicy }`。
+- 带托管标记的生成文本使用 `"managed"`，`docs/status-enums.json` 使用 `"create-only"`。
 
-- [ ] **Step 1: Write failing strict-template tests**
+- [ ] **步骤 1：编写失败的严格模板测试**
 
 ```js
 // tests/template.test.mjs
@@ -685,20 +686,20 @@ test("rejects unresolved variables", () => {
 });
 ```
 
-- [ ] **Step 2: Write failing manifest and planner tests**
+- [ ] **步骤 2：编写失败的清单和规划器测试**
 
-The planner test must assert:
+规划器测试必须断言：
 
-- a multi-repo fixture resolves three independent component roots;
-- a monorepo fixture resolves component paths under one root;
-- Core rules are planned for every component;
-- server, admin, and miniprogram templates are selected correctly;
-- every operation target remains inside its component root;
-- no planned content contains `{{` or `}}`;
-- an owner name absent from `components` fails with `UNKNOWN_CONTRACT_OWNER`;
-- a Profile assigned to an unsupported component fails with `INCOMPATIBLE_PROFILE`.
+- multi-repo fixture 能解析出三个独立组件根目录；
+- monorepo fixture 能解析同一根目录下的组件路径；
+- 每个组件都包含计划应用的 Core 规则；
+- 能正确选择 server、admin 和 miniprogram 模板；
+- 每个操作目标均位于其组件根目录内；
+- 计划内容不包含 `{{` 或 `}}`；
+- `components` 中不存在的所有者以 `UNKNOWN_CONTRACT_OWNER` 失败；
+- Profile 分配给不支持的组件时以 `INCOMPATIBLE_PROFILE` 失败。
 
-Use exact fixture content:
+使用以下精确 fixture 内容：
 
 ```yaml
 schemaVersion: 1
@@ -722,13 +723,13 @@ generation:
   conflictPolicy: report
 ```
 
-- [ ] **Step 3: Run focused tests and verify failures**
+- [ ] **步骤 3：运行针对性测试并确认失败**
 
-Run: `node --test tests/template.test.mjs tests/planner.test.mjs`
+运行：`node --test tests/template.test.mjs tests/planner.test.mjs`
 
-Expected: FAIL because the three implementation modules do not exist.
+预期：FAIL，因为三个实现模块尚不存在。
 
-- [ ] **Step 4: Implement strict rendering**
+- [ ] **步骤 4：实现严格渲染**
 
 ```js
 // tooling/lib/template.mjs
@@ -754,44 +755,44 @@ export function renderStrict(source, variables) {
 }
 ```
 
-- [ ] **Step 5: Implement manifest cross-reference checks**
+- [ ] **步骤 5：实现清单交叉引用检查**
 
-`loadProjectManifest()` must:
+`loadProjectManifest()` 必须：
 
-1. load `governance-kit.yaml`;
-2. validate it with the project Schema;
-3. load the catalog;
-4. resolve each Profile;
-5. verify component compatibility;
-6. verify contract owners exist;
-7. return absolute workspace/component paths plus the selected metadata.
+1. 加载 `governance-kit.yaml`；
+2. 使用项目 Schema 验证；
+3. 加载目录；
+4. 解析每个 Profile；
+5. 验证组件兼容性；
+6. 验证契约所有者存在；
+7. 返回工作区/组件绝对路径以及所选元数据。
 
-Use `GovernanceError` codes:
+使用以下 `GovernanceError` 错误码：
 
 - `PROFILE_NOT_FOUND`
 - `INCOMPATIBLE_PROFILE`
 - `UNKNOWN_CONTRACT_OWNER`
 
-- [ ] **Step 6: Implement deterministic planning**
+- [ ] **步骤 6：实现确定性规划**
 
-`buildApplyPlan()` must create operations in this order:
+`buildApplyPlan()` 必须按以下顺序创建操作：
 
-1. Core rules sorted by filename.
-2. Shared template files sorted by relative path.
-3. Component template files sorted by relative path.
-4. Component Profile documentation.
+1. 按文件名排序的 Core 规则。
+2. 按相对路径排序的共享模板文件。
+3. 按相对路径排序的组件模板文件。
+4. 组件 Profile 文档。
 
-Template variables are merged deterministically:
+模板变量按确定顺序合并：
 
-1. Derived workspace values:
+1. 工作区派生值：
    - `PRODUCT_NAME` = `manifest.project.name`
-   - `SERVER_NAME`, `ADMIN_NAME`, and `MINIPROGRAM_NAME` = basename of the matching component path
-   - `SERVER_REPO_DIR_NAME` = basename of the server component path
-2. Selected Profile `templateVariables`.
+   - `SERVER_NAME`、`ADMIN_NAME` 和 `MINIPROGRAM_NAME` = 对应组件路径的 basename
+   - `SERVER_REPO_DIR_NAME` = server 组件路径的 basename
+2. 所选 Profile 的 `templateVariables`。
 
-Duplicate keys with unequal values fail with `VARIABLE_CONFLICT`. A variable required by a template but absent from both sources fails through `renderStrict()`.
+重复键的值不一致时以 `VARIABLE_CONFLICT` 失败。模板要求但两个来源都未提供的变量通过 `renderStrict()` 失败。
 
-Map the `client` component with `wechat-miniprogram` Profile to the existing `templates/miniprogram` source during the compatibility window. Add these generated metadata lines to managed Markdown content:
+兼容窗口内，将使用 `wechat-miniprogram` Profile 的 `client` 组件映射到现有 `templates/miniprogram` 来源。为托管 Markdown 内容添加以下生成元数据：
 
 ```markdown
 <!-- governance-kit:managed -->
@@ -799,19 +800,19 @@ Map the `client` component with `wechat-miniprogram` Profile to the existing `te
 <!-- source-version: 1 -->
 ```
 
-Do not add managed markers to JSON status source files because they must remain valid JSON. Treat `docs/status-enums.json` as create-only in Task 5.
+不要向 JSON 状态源文件添加托管标记，因为它们必须保持为有效 JSON。任务 5 将 `docs/status-enums.json` 视为仅创建文件。
 
-- [ ] **Step 7: Run focused and full tests**
+- [ ] **步骤 7：运行针对性测试和完整测试**
 
-Run: `node --test tests/template.test.mjs tests/planner.test.mjs`
+运行：`node --test tests/template.test.mjs tests/planner.test.mjs`
 
-Expected: all focused tests pass.
+预期：全部针对性测试通过。
 
-Run: `npm test`
+运行：`npm test`
 
-Expected: all tests pass.
+预期：全部测试通过。
 
-- [ ] **Step 8: Commit**
+- [ ] **步骤 8：提交**
 
 ```powershell
 git add tooling/lib/manifest.mjs tooling/lib/template.mjs tooling/lib/planner.mjs tests/template.test.mjs tests/planner.test.mjs tests/fixtures
@@ -820,19 +821,19 @@ git commit -m "feat: plan deterministic governance composition"
 
 ---
 
-### Task 5: Apply plans without overwriting user-owned files
+### 任务 5：在不覆盖用户文件的前提下应用计划
 
-**Files:**
-- Create: `tooling/lib/apply.mjs`
-- Create: `tests/helpers/workspace.mjs`
-- Create: `tests/apply.test.mjs`
+**文件：**
+- 创建：`tooling/lib/apply.mjs`
+- 创建：`tests/helpers/workspace.mjs`
+- 创建：`tests/apply.test.mjs`
 
-**Interfaces:**
-- Consumes: `ApplyPlan` from Task 4 and `writeUtf8Atomic()` from Task 2.
-- Produces: `applyGovernance({ workspaceDir: string, kitRoot?: string, dryRun?: boolean }): Promise<ApplyReport>`; omitted `kitRoot` resolves to the repository containing `tooling/lib/apply.mjs`.
-- `ApplyReport` contains arrays `created`, `updated`, `unchanged`, `conflicts`, `warnings`, and `errors`.
+**接口：**
+- 使用：任务 4 的 `ApplyPlan` 和任务 2 的 `writeUtf8Atomic()`。
+- 产出：`applyGovernance({ workspaceDir: string, kitRoot?: string, dryRun?: boolean }): Promise<ApplyReport>`；省略 `kitRoot` 时，解析为包含 `tooling/lib/apply.mjs` 的仓库。
+- `ApplyReport` 包含 `created`、`updated`、`unchanged`、`conflicts`、`warnings` 和 `errors` 数组。
 
-- [ ] **Step 1: Write failing apply tests**
+- [ ] **步骤 1：编写失败的应用测试**
 
 ```js
 // tests/apply.test.mjs
@@ -869,25 +870,25 @@ test("a second unchanged apply is idempotent", async (t) => {
 });
 ```
 
-- [ ] **Step 2: Run the tests and verify they fail**
+- [ ] **步骤 2：运行测试并确认失败**
 
-Run: `node --test tests/apply.test.mjs`
+运行：`node --test tests/apply.test.mjs`
 
-Expected: FAIL because `apply.mjs` and the fixture helper do not exist.
+预期：FAIL，因为 `apply.mjs` 和 fixture 辅助函数尚不存在。
 
-- [ ] **Step 3: Implement isolated fixture creation**
+- [ ] **步骤 3：实现隔离的 fixture 创建**
 
-`createFixtureWorkspace(t, fixtureName)` must:
+`createFixtureWorkspace(t, fixtureName)` 必须：
 
-- use `mkdtemp(path.join(tmpdir(), "governance-kit-"))`;
-- register cleanup with `t.after(() => rm(root, { recursive: true, force: true }))`;
-- copy the selected fixture manifest;
-- create every component directory declared by that fixture;
-- return the temporary workspace path.
+- 使用 `mkdtemp(path.join(tmpdir(), "governance-kit-"))`；
+- 通过 `t.after(() => rm(root, { recursive: true, force: true }))` 注册清理；
+- 复制选定的 fixture 清单；
+- 创建该 fixture 声明的所有组件目录；
+- 返回临时工作区路径。
 
-- [ ] **Step 4: Implement classification and dry-run**
+- [ ] **步骤 4：实现分类和 dry-run**
 
-Classification rules:
+分类规则：
 
 ```text
 target absent                                  -> created
@@ -897,38 +898,38 @@ target is docs/status-enums.json and exists    -> conflict
 all other existing targets                     -> conflict
 ```
 
-Before any write:
+任何写入前：
 
-- build the complete plan;
-- classify every operation;
-- return immediately when `dryRun` is true;
-- stop all writes if the report contains an `error`;
-- create parent directories only for operations classified `created` or `updated`.
+- 构建完整计划；
+- 对每项操作进行分类；
+- `dryRun` 为 true 时立即返回；
+- 报告中包含 `error` 时停止全部写入；
+- 只为分类为 `created` 或 `updated` 的操作创建父目录。
 
-Use `writeUtf8Atomic()` for every write. Sort each report array by path before returning it.
+每次写入都使用 `writeUtf8Atomic()`。返回前按路径对报告中的每个数组排序。
 
-- [ ] **Step 5: Add source-version mismatch behavior**
+- [ ] **步骤 5：添加来源版本不匹配行为**
 
-If a managed target has the same source ID but a different source version:
+如果托管目标具有相同来源 ID，但来源版本不同：
 
-- do not update it;
-- add a `conflicts` entry with code `SOURCE_VERSION_MISMATCH`;
-- include expected and actual versions;
-- leave the file byte-for-byte unchanged.
+- 不更新该文件；
+- 添加错误码为 `SOURCE_VERSION_MISMATCH` 的 `conflicts` 条目；
+- 包含预期版本和实际版本；
+- 保持文件逐字节不变。
 
-Add a test that writes version `0`, runs apply, and verifies the conflict and unchanged bytes.
+增加一个测试：写入版本 `0`，运行 apply，并验证冲突及文件字节未变化。
 
-- [ ] **Step 6: Run focused and full tests**
+- [ ] **步骤 6：运行针对性测试和完整测试**
 
-Run: `node --test tests/apply.test.mjs`
+运行：`node --test tests/apply.test.mjs`
 
-Expected: all apply, conflict, and idempotency tests pass.
+预期：全部应用、冲突和幂等性测试通过。
 
-Run: `npm test`
+运行：`npm test`
 
-Expected: all tests pass.
+预期：全部测试通过。
 
-- [ ] **Step 7: Commit**
+- [ ] **步骤 7：提交**
 
 ```powershell
 git add tooling/lib/apply.mjs tests/helpers/workspace.mjs tests/apply.test.mjs
@@ -937,98 +938,98 @@ git commit -m "feat: apply governance layers safely"
 
 ---
 
-### Task 6: Validate status registries and generated workspaces
+### 任务 6：验证状态注册表和生成的工作区
 
-**Files:**
-- Create: `tooling/lib/status-registry.mjs`
-- Create: `tooling/lib/validate.mjs`
-- Create: `tests/status-registry.test.mjs`
-- Create: `tests/validate.test.mjs`
+**文件：**
+- 创建：`tooling/lib/status-registry.mjs`
+- 创建：`tooling/lib/validate.mjs`
+- 创建：`tests/status-registry.test.mjs`
+- 创建：`tests/validate.test.mjs`
 
-**Interfaces:**
-- Produces: `validateStatusSource(source: object): void`.
-- Produces: `renderStatusRegistry(source: object, options: { remote: boolean }): string`.
-- Produces: `validateWorkspace({ workspaceDir: string, kitRoot?: string }): Promise<ValidationReport>`; omitted `kitRoot` resolves to the repository containing `tooling/lib/validate.mjs`.
-- `ValidationReport` contains `valid`, `checks`, `warnings`, and `errors`.
+**接口：**
+- 产出：`validateStatusSource(source: object): void`。
+- 产出：`renderStatusRegistry(source: object, options: { remote: boolean }): string`。
+- 产出：`validateWorkspace({ workspaceDir: string, kitRoot?: string }): Promise<ValidationReport>`；省略 `kitRoot` 时，解析为包含 `tooling/lib/validate.mjs` 的仓库。
+- `ValidationReport` 包含 `valid`、`checks`、`warnings` 和 `errors`。
 
-- [ ] **Step 1: Write failing status tests**
+- [ ] **步骤 1：编写失败的状态测试**
 
-Test these exact behaviors:
+测试以下精确行为：
 
-- duplicate group names fail with `DUPLICATE_STATUS_GROUP`;
-- duplicate codes in one group fail with `DUPLICATE_STATUS_CODE`;
-- unknown `next` code fails with `UNKNOWN_NEXT_STATUS`;
-- valid source renders deterministic Markdown;
-- server and remote-client headings differ only in their source notice;
-- changing the source then rendering produces the expected new code.
+- 重复组名以 `DUPLICATE_STATUS_GROUP` 失败；
+- 同组重复 code 以 `DUPLICATE_STATUS_CODE` 失败；
+- 未知 `next` code 以 `UNKNOWN_NEXT_STATUS` 失败；
+- 有效状态源能渲染确定性 Markdown；
+- server 和远程 client 标题仅在来源说明上不同；
+- 修改状态源后重新渲染能产生预期的新 code。
 
-Use a compact fixture with `draft`, `reviewing`, and `approved` transitions.
+使用包含 `draft`、`reviewing` 和 `approved` 流转的精简 fixture。
 
-- [ ] **Step 2: Write failing workspace-validation tests**
+- [ ] **步骤 2：编写失败的工作区验证测试**
 
-Test these exact checks:
+测试以下精确检查：
 
-- valid applied fixture returns `valid: true`;
-- an unresolved `{{BUILD_COMMAND}}` returns `UNRESOLVED_PLACEHOLDER`;
-- a missing managed file returns `MISSING_GENERATED_FILE`;
-- a modified generated registry returns `STATUS_REGISTRY_DRIFT`;
-- a duplicate `<!-- rule-id: CORE-ARCH-001 -->` declaration returns `DUPLICATE_RULE_ID`;
-- a manifest/Profile incompatibility is returned as an error rather than an uncaught exception.
+- 有效的已应用 fixture 返回 `valid: true`；
+- 未解析的 `{{BUILD_COMMAND}}` 返回 `UNRESOLVED_PLACEHOLDER`；
+- 缺失托管文件返回 `MISSING_GENERATED_FILE`；
+- 修改后的生成注册表返回 `STATUS_REGISTRY_DRIFT`；
+- 重复声明 `<!-- rule-id: CORE-ARCH-001 -->` 返回 `DUPLICATE_RULE_ID`；
+- 清单/Profile 不兼容以错误返回，而不是产生未捕获异常。
 
-- [ ] **Step 3: Run focused tests and verify failures**
+- [ ] **步骤 3：运行针对性测试并确认失败**
 
-Run: `node --test tests/status-registry.test.mjs tests/validate.test.mjs`
+运行：`node --test tests/status-registry.test.mjs tests/validate.test.mjs`
 
-Expected: FAIL because both implementation modules do not exist.
+预期：FAIL，因为两个实现模块尚不存在。
 
-- [ ] **Step 4: Implement CLI-side status validation and rendering**
+- [ ] **步骤 4：实现 CLI 侧状态验证和渲染**
 
-Implement the duplicate and transition checks in `validateStatusSource()` and deterministic Markdown construction in `renderStatusRegistry()`. Match the current server/client output byte-for-byte so existing generated-project scripts remain the compatibility reference.
+在 `validateStatusSource()` 中实现重复和流转检查，在 `renderStatusRegistry()` 中实现确定性 Markdown 构建。输出必须与当前 server/client 逐字节一致，使现有生成项目脚本继续作为兼容性基准。
 
-Do not modify the existing template scripts in phase one. Verify they remain directly executable with:
-
-```powershell
-node scripts/generate-status-registry.mjs
-node scripts/check-status-registry.mjs
-```
-
-The server script reads its local `docs/status-enums.json`. Admin and miniprogram scripts keep supporting `SERVER_REPO_DIR`, with the sibling-directory placeholder rendered during apply. Extracting one packaged implementation for generated projects is explicitly deferred to phase two.
-
-- [ ] **Step 5: Implement workspace validation**
-
-`validateWorkspace()` must:
-
-1. load and cross-check the manifest;
-2. build the expected apply plan without writing;
-3. verify every planned managed file exists;
-4. scan planned text targets for unresolved `{{[A-Z0-9_]+}}`;
-5. scan `core/`, `templates/`, and `profiles/` for `<!-- rule-id: ID -->` declarations and reject duplicate IDs;
-6. validate the server status source;
-7. render and compare status Markdown where present;
-8. return sorted structured diagnostics.
-
-Convert `GovernanceError` instances into report errors using `error.toJSON()`. Unexpected errors must be rethrown so programmer defects are not hidden.
-
-- [ ] **Step 6: Run focused, wrapper, and full tests**
-
-Run: `node --test tests/status-registry.test.mjs tests/validate.test.mjs`
-
-Expected: all focused tests pass.
-
-Run from a generated server fixture:
+第一阶段不修改现有模板脚本。验证它们仍可通过以下命令直接执行：
 
 ```powershell
 node scripts/generate-status-registry.mjs
 node scripts/check-status-registry.mjs
 ```
 
-Expected: both commands exit 0 and the check prints `Status registry check passed.`
+server 脚本读取本地 `docs/status-enums.json`。admin 和 miniprogram 脚本继续支持 `SERVER_REPO_DIR`，相邻目录占位符在 apply 时渲染。将生成项目的实现抽取为统一封装明确推迟到第二阶段。
 
-Run: `npm test`
+- [ ] **步骤 5：实现工作区验证**
 
-Expected: all tests pass.
+`validateWorkspace()` 必须：
 
-- [ ] **Step 7: Commit**
+1. 加载并交叉检查清单；
+2. 构建预期应用计划，但不写入；
+3. 验证每个计划中的托管文件都存在；
+4. 扫描计划文本目标中的未解析 `{{[A-Z0-9_]+}}`；
+5. 扫描 `core/`、`templates/` 和 `profiles/` 中的 `<!-- rule-id: ID -->` 声明并拒绝重复 ID；
+6. 验证 server 状态源；
+7. 在状态 Markdown 存在时渲染并比较；
+8. 返回排序后的结构化诊断结果。
+
+使用 `error.toJSON()` 将 `GovernanceError` 实例转换为报告错误。必须重新抛出意外错误，避免隐藏程序缺陷。
+
+- [ ] **步骤 6：运行针对性、wrapper 和完整测试**
+
+运行：`node --test tests/status-registry.test.mjs tests/validate.test.mjs`
+
+预期：全部针对性测试通过。
+
+在生成的 server fixture 中运行：
+
+```powershell
+node scripts/generate-status-registry.mjs
+node scripts/check-status-registry.mjs
+```
+
+预期：两个命令退出码均为 0，检查命令输出 `Status registry check passed.`
+
+运行：`npm test`
+
+预期：全部测试通过。
+
+- [ ] **步骤 7：提交**
 
 ```powershell
 git add tooling/lib/status-registry.mjs tooling/lib/validate.mjs tests/status-registry.test.mjs tests/validate.test.mjs
@@ -1037,41 +1038,41 @@ git commit -m "feat: validate generated governance workspaces"
 
 ---
 
-### Task 7: Expose apply and validate through the CLI
+### 任务 7：通过 CLI 暴露 apply 和 validate
 
-**Files:**
-- Modify: `tooling/cli.mjs`
-- Modify: `tooling/index.mjs`
-- Create: `tests/cli.test.mjs`
+**文件：**
+- 修改：`tooling/cli.mjs`
+- 修改：`tooling/index.mjs`
+- 创建：`tests/cli.test.mjs`
 
-**Interfaces:**
-- Consumes: `applyGovernance()` and `validateWorkspace()`.
-- Produces commands:
+**接口：**
+- 使用：`applyGovernance()` 和 `validateWorkspace()`。
+- 产出命令：
   - `governance-kit apply --workspace <path> [--dry-run] [--json]`
   - `governance-kit validate --workspace <path> [--json]`
-- Exit codes: `0` success, `1` validation errors or conflicts, `2` invalid CLI usage.
+- 退出码：`0` 表示成功，`1` 表示验证错误或冲突，`2` 表示 CLI 用法错误。
 
-- [ ] **Step 1: Write failing end-to-end CLI tests**
+- [ ] **步骤 1：编写失败的 CLI 端到端测试**
 
-Spawn `process.execPath` with `tooling/cli.mjs` and assert:
+使用 `process.execPath` 启动 `tooling/cli.mjs` 并断言：
 
-- `apply --dry-run --json` exits 0, reports creations, and writes nothing;
-- `apply --json` exits 0 in an empty fixture and produces managed files;
-- `apply --json` exits 1 when an existing user file conflicts;
-- `validate --json` exits 0 after a clean apply;
-- `validate --json` exits 1 after introducing registry drift;
-- an unknown command exits 2 and prints usage to stderr;
-- JSON mode writes exactly one valid JSON document to stdout.
+- `apply --dry-run --json` 退出码为 0，报告待创建文件且不执行写入；
+- `apply --json` 在空 fixture 中退出码为 0，并生成托管文件；
+- 已有用户文件发生冲突时，`apply --json` 退出码为 1；
+- 干净 apply 后，`validate --json` 退出码为 0；
+- 引入注册表漂移后，`validate --json` 退出码为 1；
+- 未知命令退出码为 2，并向 stderr 输出用法；
+- JSON 模式只向 stdout 写入一份有效 JSON 文档。
 
-- [ ] **Step 2: Run CLI tests and verify failures**
+- [ ] **步骤 2：运行 CLI 测试并确认失败**
 
-Run: `node --test tests/cli.test.mjs`
+运行：`node --test tests/cli.test.mjs`
 
-Expected: FAIL because the CLI still contains the initialization stub.
+预期：FAIL，因为 CLI 仍包含初始化 stub。
 
-- [ ] **Step 3: Implement dependency-free argument parsing**
+- [ ] **步骤 3：实现无额外依赖的参数解析**
 
-Accept only:
+只接受：
 
 ```text
 apply
@@ -1082,13 +1083,13 @@ validate
 --help
 ```
 
-Reject duplicate `--workspace`, missing values, `--dry-run` on validate, and unknown flags with exit code 2.
+出现重复 `--workspace`、缺失值、validate 使用 `--dry-run` 或未知参数时，以退出码 2 拒绝。
 
-Default `--workspace` to `process.cwd()`. Resolve `kitRoot` from the CLI module location, not from the current working directory.
+`--workspace` 默认使用 `process.cwd()`。从 CLI 模块位置解析 `kitRoot`，不得从当前工作目录解析。
 
-- [ ] **Step 4: Implement stable output and exit codes**
+- [ ] **步骤 4：实现稳定输出和退出码**
 
-JSON output shape:
+JSON 输出结构：
 
 ```json
 {
@@ -1106,25 +1107,25 @@ JSON output shape:
 }
 ```
 
-Human-readable output must include counts for every report category and list conflicts/errors with their codes and paths.
+人类可读输出以中文呈现，必须包含每个报告分类的数量，并列出冲突/错误的英文错误码和路径。
 
-`apply` returns exit 1 when `conflicts` or `errors` is non-empty. `validate` returns exit 1 when `valid` is false.
+`conflicts` 或 `errors` 非空时，`apply` 返回退出码 1。`valid` 为 false 时，`validate` 返回退出码 1。
 
-- [ ] **Step 5: Run CLI and full tests**
+- [ ] **步骤 5：运行 CLI 测试和完整测试**
 
-Run: `node --test tests/cli.test.mjs`
+运行：`node --test tests/cli.test.mjs`
 
-Expected: all CLI tests pass.
+预期：全部 CLI 测试通过。
 
-Run: `npm test`
+运行：`npm test`
 
-Expected: all tests pass.
+预期：全部测试通过。
 
-Run: `node tooling/cli.mjs --help`
+运行：`node tooling/cli.mjs --help`
 
-Expected: exit 0 and usage text containing both `apply` and `validate`.
+预期：退出码为 0，用法文本同时包含 `apply` 和 `validate`。
 
-- [ ] **Step 6: Commit**
+- [ ] **步骤 6：提交**
 
 ```powershell
 git add tooling/cli.mjs tooling/index.mjs tests/cli.test.mjs
@@ -1133,96 +1134,97 @@ git commit -m "feat: expose governance apply and validate CLI"
 
 ---
 
-### Task 8: Document the MVP and prove clean-workspace behavior
+### 任务 8：记录 MVP 并验证干净工作区行为
 
-**Files:**
-- Modify: `README.md`
-- Create: `docs/MANIFEST_REFERENCE.md`
-- Create: `docs/MIGRATION_FROM_V1_TEMPLATES.md`
-- Modify: `tests/package.test.mjs`
-- Modify: `tests/cli.test.mjs`
+**文件：**
+- 修改：`README.md`
+- 创建：`docs/MANIFEST_REFERENCE.md`
+- 创建：`docs/MIGRATION_FROM_V1_TEMPLATES.md`
+- 修改：`tests/package.test.mjs`
+- 修改：`tests/cli.test.mjs`
 
-**Interfaces:**
-- Documents the stable CLI and manifest fields created by Tasks 1–7.
-- Adds final acceptance coverage without changing runtime interfaces.
+**接口：**
+- 记录任务 1–7 创建的稳定 CLI 和清单字段。
+- 不改变运行时接口，只增加最终验收覆盖。
 
-- [ ] **Step 1: Add a failing documentation contract test**
+- [ ] **步骤 1：添加失败的文档契约测试**
 
-Extend `tests/package.test.mjs`:
+扩展 `tests/package.test.mjs`：
 
 ```js
 test("README documents both supported workflows", async () => {
   const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
   assert.match(readme, /governance-kit apply/);
   assert.match(readme, /governance-kit validate/);
-  assert.match(readme, /existing project/i);
-  assert.match(readme, /new project/i);
+  assert.match(readme, /已有项目/);
+  assert.match(readme, /新项目/);
 });
 ```
 
-- [ ] **Step 2: Run the documentation test and verify it fails**
+- [ ] **步骤 2：运行文档测试并确认失败**
 
-Run: `node --test tests/package.test.mjs`
+运行：`node --test tests/package.test.mjs`
 
-Expected: FAIL because README does not yet document the CLI workflows.
+预期：FAIL，因为 README 尚未记录 CLI 工作流。
 
-- [ ] **Step 3: Update user and Agent documentation**
+- [ ] **步骤 3：更新用户和 Agent 文档**
 
-README must contain:
+README 必须包含：
 
-- the five-layer architecture;
-- installation with `npm install`;
-- a complete `governance-kit.yaml` example;
-- dry-run before apply;
-- apply and validate commands;
-- conflict behavior;
-- supported phase-one Profiles;
-- explicit statement that `init` and additional stacks are later phases.
+- 中文主体说明，技术标识和命令保留英文；
+- 五层架构；
+- 使用 `npm install` 安装；
+- 完整的 `governance-kit.yaml` 示例；
+- apply 前先执行 dry-run；
+- apply 和 validate 命令；
+- 冲突处理行为；
+- 第一阶段支持的 Profile；
+- 明确说明 `init` 和其他技术栈属于后续阶段。
 
-`docs/MANIFEST_REFERENCE.md` must document every Schema field, allowed enum, default, ownership rule, and one monorepo plus one multi-repo example.
+`docs/MANIFEST_REFERENCE.md` 必须记录每个 Schema 字段、允许的枚举、默认值、所有权规则，以及一个 monorepo 和一个 multi-repo 示例。
 
-`docs/MIGRATION_FROM_V1_TEMPLATES.md` must explain:
+`docs/MIGRATION_FROM_V1_TEMPLATES.md` 必须说明：
 
-- existing templates remain available;
-- how to create a manifest for an existing three-repository workspace;
-- how dry-run classifies existing `AGENTS.md`;
-- why user-owned files are reported instead of overwritten;
-- how to resolve conflicts manually and rerun validate.
+- 现有模板继续可用；
+- 如何为已有三仓库工作区创建清单；
+- dry-run 如何分类已有 `AGENTS.md`；
+- 为什么报告用户文件而不是覆盖；
+- 如何手工解决冲突并重新运行 validate。
 
-- [ ] **Step 4: Add final acceptance tests**
+- [ ] **步骤 4：添加最终验收测试**
 
-Extend `tests/cli.test.mjs` with two end-to-end tests:
+为 `tests/cli.test.mjs` 增加两个端到端测试：
 
-1. Copy the monorepo fixture, apply twice, assert the second report has zero `created` and `updated`, then validate successfully.
-2. Copy the multi-repo fixture where each component contains its own `.git` directory and the workspace root does not, apply and validate successfully, and assert no command attempted to initialize or modify Git metadata.
+1. 复制 monorepo fixture，执行两次 apply，断言第二次报告的 `created` 和 `updated` 均为零，然后成功 validate。
+2. 复制 multi-repo fixture；每个组件包含独立 `.git` 目录，工作区根目录不包含；成功 apply 和 validate，并断言没有命令尝试初始化或修改 Git 元数据。
 
-- [ ] **Step 5: Run fresh full verification**
+- [ ] **步骤 5：运行全新的完整验证**
 
-Run: `npm ci`
+运行：`npm ci`
 
-Expected: exit 0 using the committed lockfile.
+预期：使用已提交 lockfile，退出码为 0。
 
-Run: `npm test`
+运行：`npm test`
 
-Expected: all tests pass with zero failures.
+预期：全部测试通过，失败数为零。
 
-Run:
+运行：
 
 ```powershell
 node tooling/cli.mjs apply --workspace tests/fixtures/multi-repo --dry-run --json
 ```
 
-Expected: exit 0, valid JSON, at least one planned creation, and no fixture modifications.
+预期：退出码为 0，输出有效 JSON，至少包含一个计划创建项，并且 fixture 未修改。
 
-Run: `git diff --check`
+运行：`git diff --check`
 
-Expected: exit 0 with no whitespace errors.
+预期：退出码为 0，没有空白错误。
 
-Run: `git status --short`
+运行：`git status --short`
 
-Expected: only the intentional Task 8 documentation and test changes are present before commit.
+预期：提交前只存在任务 8 有意产生的文档和测试修改。
 
-- [ ] **Step 6: Commit**
+- [ ] **步骤 6：提交**
 
 ```powershell
 git add README.md docs/MANIFEST_REFERENCE.md docs/MIGRATION_FROM_V1_TEMPLATES.md tests/package.test.mjs tests/cli.test.mjs
@@ -1231,9 +1233,9 @@ git commit -m "docs: document governance overlay workflows"
 
 ---
 
-## Phase-One Completion Gate
+## 第一阶段完成门槛
 
-Before claiming the MVP complete, run all commands from a clean checkout or detached verification worktree:
+在声明 MVP 完成前，从干净 checkout 或 detached verification worktree 运行全部命令：
 
 ```powershell
 npm ci
@@ -1245,14 +1247,14 @@ git diff --check
 git status --short
 ```
 
-Completion requires:
+完成必须满足：
 
-- zero test failures;
-- both dry-run commands emit valid JSON and make no fixture changes;
-- no unresolved `{{VARIABLE}}` exists in generated test workspaces;
-- existing user files remain byte-identical after conflict scenarios;
-- a second unchanged apply produces zero creations and updates;
-- status registry generation and drift checks pass;
-- no unexpected Git working-tree changes remain.
+- 测试失败数为零；
+- 两个 dry-run 命令都输出有效 JSON，且不修改 fixture；
+- 生成的测试工作区中不存在未解析的 `{{VARIABLE}}`；
+- 冲突场景后，已有用户文件保持逐字节一致；
+- 输入不变时第二次 apply 的创建和更新数量均为零；
+- 状态注册表生成和漂移检查通过；
+- 不存在意外 Git 工作区修改。
 
-Phase two (additional Profiles and shared status-script packaging) and phase three (`init` plus upstream scaffold integration) require separate implementation plans after this gate passes.
+通过该门槛后，再分别为第二阶段（新增 Profile 和共享状态脚本封装）与第三阶段（`init` 和上游脚手架集成）编写独立实施计划。
