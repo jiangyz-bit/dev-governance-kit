@@ -1,0 +1,57 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "governance-kit.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "project", "components", "contracts", "generation"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "repositoryMode"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "repositoryMode": { "enum": ["monorepo", "multi-repo"] }
+      }
+    },
+    "components": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "server": { "$ref": "#/definitions/component" },
+        "admin": { "$ref": "#/definitions/component" },
+        "client": { "$ref": "#/definitions/component" }
+      }
+    },
+    "contracts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statusRegistryOwner", "apiContractOwner"],
+      "properties": {
+        "statusRegistryOwner": { "enum": ["server", "admin", "client"] },
+        "apiContractOwner": { "enum": ["server", "admin", "client"] }
+      }
+    },
+    "generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["conflictPolicy"],
+      "properties": {
+        "conflictPolicy": { "const": "report" }
+      }
+    }
+  },
+  "definitions": {
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "path"],
+      "properties": {
+        "profile": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

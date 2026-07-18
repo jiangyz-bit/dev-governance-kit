@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "blueprint.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "version", "components", "defaults", "contracts"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+    "version": { "type": "integer", "minimum": 1 },
+    "components": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "server": { "$ref": "#/definitions/profileSelection" },
+        "admin": { "$ref": "#/definitions/profileSelection" },
+        "client": { "$ref": "#/definitions/profileSelection" }
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repositoryMode"],
+      "properties": {
+        "repositoryMode": { "enum": ["monorepo", "multi-repo"] }
+      }
+    },
+    "contracts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statusRegistryOwner", "apiContractOwner"],
+      "properties": {
+        "statusRegistryOwner": { "enum": ["server", "admin", "client"] },
+        "apiContractOwner": { "enum": ["server", "admin", "client"] }
+      }
+    }
+  },
+  "definitions": {
+    "profileSelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile"],
+      "properties": {
+        "profile": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
