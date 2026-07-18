@@ -1,0 +1,93 @@
+import assert from "node:assert/strict";
+import { appendFile, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { createFixtureWorkspace } from "./helpers/workspace.mjs";
+
+const kitRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const cliPath = path.join(kitRoot, "tooling", "cli.mjs");
+
+function runCli(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [cliPath, ...args], {
+      cwd: kitRoot,
+      windowsHide: true
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+test("apply dry-run emits JSON and writes nothing", async (t) => {
+  const workspace = await createFixtureWorkspace(t, "multi-repo");
+  const result = await runCli(["apply", "--workspace", workspace, "--dry-run", "--json"]);
+  assert.equal(result.code, 0);
+  assert.equal(result.stderr, "");
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.command, "apply");
+  assert.equal(output.ok, true);
+  assert.ok(output.report.created.length > 0);
+  await assert.rejects(readFile(path.join(workspace, "demo-server", "AGENTS.md"), "utf8"));
+});
+
+test("apply then validate succeeds", async (t) => {
+  const workspace = await createFixtureWorkspace(t, "multi-repo");
+  const applied = await runCli(["apply", "--workspace", workspace, "--json"]);
+  assert.equal(applied.code, 0);
+  assert.equal(JSON.parse(applied.stdout).ok, true);
+
+  const validated = await runCli(["validate", "--workspace", workspace, "--json"]);
+  assert.equal(validated.code, 0);
+  assert.equal(JSON.parse(validated.stdout).report.valid, true);
+});
+
+test("apply exits 1 for a user-file conflict", async (t) => {
+  const workspace = await createFixtureWorkspace(t, "multi-repo");
+  await writeFile(path.join(workspace, "demo-server", "AGENTS.md"), "# 用户文件\n", "utf8");
+  const result = await runCli(["apply", "--workspace", workspace, "--json"]);
+  assert.equal(result.code, 1);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.ok, false);
+  assert.ok(output.report.conflicts.some((entry) => entry.code === "USER_FILE_CONFLICT"));
+});
+
+test("validate exits 1 for registry drift", async (t) => {
+  const workspace = await createFixtureWorkspace(t, "multi-repo");
+  await runCli(["apply", "--workspace", workspace, "--json"]);
+  const registry = path.join(workspace, "demo-server", "docs", "STATUS_ENUM_REGISTRY.md");
+  await appendFile(registry, "\n漂移\n", "utf8");
+  const result = await runCli(["validate", "--workspace", workspace, "--json"]);
+  assert.equal(result.code, 1);
+  const output = JSON.parse(result.stdout);
+  assert.ok(output.report.errors.some((entry) => entry.code === "STATUS_REGISTRY_DRIFT"));
+});
+
+test("invalid CLI usage exits 2 and prints usage", async () => {
+  const unknown = await runCli(["unknown"]);
+  assert.equal(unknown.code, 2);
+  assert.match(unknown.stderr, /用法：/);
+
+  const invalidFlag = await runCli(["validate", "--dry-run"]);
+  assert.equal(invalidFlag.code, 2);
+  assert.match(invalidFlag.stderr, /--dry-run/);
+});
+
+test("human-readable mode is Chinese", async (t) => {
+  const workspace = await createFixtureWorkspace(t, "multi-repo");
+  const result = await runCli(["apply", "--workspace", workspace, "--dry-run"]);
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /创建：/);
+  assert.match(result.stdout, /冲突：/);
+});
