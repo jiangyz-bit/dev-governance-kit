@@ -1,0 +1,21 @@
+{
+  "name": "dev-governance-kit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "governance-kit": "./tooling/cli.mjs"
+  },
+  "scripts": {
+    "governance-kit": "node tooling/cli.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "test:unit": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "ajv": "8.20.0",
+    "yaml": "2.9.0"
+  }
+}
