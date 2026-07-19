@@ -432,6 +432,7 @@ npx --yes dev-governance-kit@0.1.0 init --yes --json
 
 - 不允许组件根目录通过 symlink 或 junction 指向工作区外。
 - 扫描不跟随链接。
+- 从工作区根到组件目录和写入目标的每一个已存在路径段都必须拒绝 symlink 或 junction，而不只检查最终节点。
 - 对不存在的目标文件，从最近存在的父目录验证真实路径边界。
 - Windows 路径比较处理大小写差异。
 
@@ -448,6 +449,8 @@ npx --yes dev-governance-kit@0.1.0 init --yes --json
 - 不自动删除、覆盖或 Git reset 用户内容。
 - 自动验证失败时保留生成结果，并报告 `applied: true, valid: false`。
 - `Ctrl+C` 清理临时文件并返回 `130`。
+
+这里的 TOCTOU 防护面向正常开发环境中其他工具或用户进程造成的文件变化：全量预检后，每个文件在临近提交时再次校验路径链和内容快照，检测到变化即停止，绝不覆盖已检测到的并发修改。跨平台 Node.js 文件 API 无法对“恶意本地进程在最后一次校验与系统调用之间持续替换路径”提供事务级保证，本项目不宣称抵御拥有同等文件系统权限的主动攻击者。
 
 执行阶段发生可捕获的部分失败时，JSON 至少包含：
 
@@ -532,11 +535,11 @@ npx --yes dev-governance-kit@0.1.0 init --yes --json
 CI 必须：
 
 1. 使用 `npm pack --json --pack-destination <temp-dir>` 生成可确定定位的 `.tgz`。
-2. 在全新临时目录安装生成的 `.tgz`。
+2. 在全新临时项目中通过 `npm install <absolute-tarball-path>` 安装生成的 `.tgz`；允许 npm 下载生产依赖，不依赖本机缓存。
 3. 从源码仓库之外执行：
 
    ```text
-   npm exec --offline --yes --package <absolute-tarball-path> -- governance-kit init
+   npx --no-install dev-governance-kit init
    ```
 
 4. 再执行打包后的 `validate`。
@@ -583,7 +586,7 @@ jiangyz-bit/dev-governance-kit
 - `author` 固定为 `coogle`，`repository.url` 精确指向公开仓库 `https://github.com/jiangyz-bit/dev-governance-kit.git`。
 - 增加明确的 `files` 白名单。
 - 增加公开 npm registry 的 `publishConfig`。
-- 保留 Node.js `>=20` 和现有 `bin`。
+- 保留 Node.js `>=20`，并同时暴露 `dev-governance-kit` 与兼容别名 `governance-kit` 两个 `bin`。
 - 确保 CLI 在 Unix 系统具有正确 shebang 和可执行权限。
 
 发布白名单：
@@ -594,7 +597,9 @@ core/
 profiles/
 schemas/
 templates/
-tooling/
+tooling/cli.mjs
+tooling/index.mjs
+tooling/lib/
 docs/MANIFEST_REFERENCE.md
 ```
 
@@ -632,10 +637,12 @@ tarball 端到端烟测
 4. 再次确认 `dev-governance-kit` 包名未被占用。
 5. 检查 `private` 已移除、版本为 `0.1.0`、repository URL 精确匹配公开 GitHub 仓库。
 6. 通过完整 CI 和本地 tarball 门禁。
-7. 执行 npm dry-run。
-8. 发布公开包。
-9. 验证固定版本的真实 `npx` 命令。
-10. 创建 GitHub `v0.1.0` Release。
+7. 从成功的 main CI 下载唯一候选 artifact；其中 `.tgz` 与 `release-evidence.json` 绑定 version、commit、SHA-256 和严格文件清单。
+8. Windows 与 MacBook M5 均验证这同一份候选包，禁止各自重新打包。
+9. 执行 npm dry-run。
+10. 发布 evidence 指向的 `.tgz`，并下载 registry tarball 做 SHA-256 字节级复核。
+11. 验证固定版本的真实 `npx` 命令。
+12. 使用 evidence 中的 commit 创建 GitHub `v0.1.0` Release，并附候选包与 evidence。
 
 ### 13.3 后续可信发布
 
@@ -658,7 +665,7 @@ macOS 既进入自动 CI，也进入首版人工发布门槛。
 在用户的 MacBook M5 上使用临时目录完成：
 
 1. 检查 Apple Silicon 和 Node.js 版本。
-2. 从候选 `.tgz` 安装，不依赖源码仓库。
+2. 从成功 main CI 的同一候选 artifact 下载 `.tgz` 与 evidence，先核对 commit 和 SHA-256；不得在 Mac 重新打包。
 3. 验证 `npx`/npm shim 和 CLI 可执行权限。
 4. 运行标准项目的 `init`。
 5. 验证默认小白输出、确认和取消。
