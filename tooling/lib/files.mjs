@@ -1,7 +1,84 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  access,
+  link,
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  realpath,
+  rename,
+  unlink
+} from "node:fs/promises";
+import { constants } from "node:fs";
 import path from "node:path";
 import { parse } from "yaml";
 import { GovernanceError } from "./errors.mjs";
+
+function isInside(root, target) {
+  const relative = path.relative(root, target);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function throwIfAborted(signal) {
+  signal?.throwIfAborted();
+}
+
+function unsafeRealPath(root, target, message) {
+  return new GovernanceError("UNSAFE_REAL_PATH", message, { root, target });
+}
+
+async function assertNoLinkedPathSegments(targetPath) {
+  const target = path.resolve(targetPath);
+  const parsed = path.parse(target);
+  const parts = target.slice(parsed.root.length).split(path.sep).filter(Boolean);
+  let current = parsed.root;
+
+  for (const part of parts) {
+    current = path.join(current, part);
+    try {
+      const info = await lstat(current);
+      if (info.isSymbolicLink()) {
+        throw unsafeRealPath(parsed.root, current, `路径包含符号链接：${current}`);
+      }
+    } catch (error) {
+      if (error.code === "ENOENT") break;
+      throw error;
+    }
+  }
+  return target;
+}
+
+function sameIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+async function nearestExistingParent(targetPath) {
+  let parent = path.dirname(targetPath);
+  while (true) {
+    try {
+      const info = await lstat(parent);
+      return { parent, info };
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      const next = path.dirname(parent);
+      if (next === parent) throw error;
+      parent = next;
+    }
+  }
+}
+
+async function cleanupOwnedTemporary(temporaryPath, identity) {
+  if (!identity) return;
+  try {
+    const current = await lstat(temporaryPath);
+    if (sameIdentity(current, identity)) {
+      await unlink(temporaryPath);
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+}
 
 export async function readYamlFile(filePath) {
   const source = await readFile(filePath, "utf8");
@@ -21,9 +98,169 @@ export function resolveInside(rootDir, relativePath) {
   return target;
 }
 
-export async function writeUtf8Atomic(filePath, content) {
-  await mkdir(path.dirname(filePath), { recursive: true });
-  const temporaryPath = `${filePath}.governance-kit.tmp`;
-  await writeFile(temporaryPath, content, "utf8");
-  await rename(temporaryPath, filePath);
+export async function assertRealPathInside(rootDir, targetPath, {
+  allowMissing = false
+} = {}) {
+  const rootResolved = path.resolve(rootDir);
+  const rootReal = await realpath(rootResolved);
+  const target = path.resolve(targetPath);
+  if (!isInside(rootResolved, target)) {
+    throw unsafeRealPath(rootReal, target, "目标路径逃逸出工作区");
+  }
+
+  const relativeParts = path.relative(rootResolved, target).split(path.sep).filter(Boolean);
+  let current = rootReal;
+  for (const part of relativeParts) {
+    current = path.join(current, part);
+    try {
+      const info = await lstat(current);
+      if (info.isSymbolicLink()) {
+        throw unsafeRealPath(rootReal, current, `路径包含符号链接：${current}`);
+      }
+      const targetReal = await realpath(current);
+      if (!isInside(rootReal, targetReal)) {
+        throw unsafeRealPath(rootReal, targetReal, `真实路径逃逸出工作区：${current}`);
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      if (!allowMissing) throw error;
+      break;
+    }
+  }
+  return target;
+}
+
+export async function snapshotPath(filePath) {
+  let handle;
+  let observedExisting = false;
+  try {
+    const linkInfo = await lstat(filePath);
+    observedExisting = true;
+    if (linkInfo.isSymbolicLink()) {
+      throw new GovernanceError("UNSAFE_REAL_PATH", `目标是链接：${filePath}`);
+    }
+    handle = await open(filePath, "r");
+    const before = await handle.stat();
+    const currentLinkInfo = await lstat(filePath);
+    if (currentLinkInfo.isSymbolicLink() || !sameIdentity(currentLinkInfo, before)) {
+      throw new GovernanceError("TARGET_CHANGED_DURING_READ", `打开时目标发生变化：${filePath}`);
+    }
+    const content = await handle.readFile();
+    const after = await handle.stat();
+    if (
+      !sameIdentity(before, after)
+      || before.size !== after.size
+      || before.mtimeMs !== after.mtimeMs
+    ) {
+      throw new GovernanceError("TARGET_CHANGED_DURING_READ", `读取时目标发生变化：${filePath}`);
+    }
+    return {
+      path: filePath,
+      exists: true,
+      size: after.size,
+      device: after.dev,
+      inode: after.ino,
+      mtimeMs: after.mtimeMs,
+      hash: createHash("sha256").update(content).digest("hex")
+    };
+  } catch (error) {
+    if (error.code === "ENOENT" && !observedExisting) {
+      return { path: filePath, exists: false, size: 0, hash: null };
+    }
+    if (error.code === "ENOENT") {
+      throw new GovernanceError("TARGET_CHANGED_DURING_READ", `读取时目标消失：${filePath}`);
+    }
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
+export async function assertSnapshotUnchanged(expected) {
+  const actual = await snapshotPath(expected.path);
+  if (
+    actual.exists !== expected.exists
+    || actual.size !== expected.size
+    || actual.device !== expected.device
+    || actual.inode !== expected.inode
+    || actual.mtimeMs !== expected.mtimeMs
+    || actual.hash !== expected.hash
+  ) {
+    throw new GovernanceError(
+      "TARGET_CHANGED_AFTER_PREVIEW",
+      `预览后目标文件发生变化：${expected.path}`,
+      { expected, actual }
+    );
+  }
+}
+
+export async function preflightWritableTargets(targetPaths) {
+  const targets = [...new Set(targetPaths.map((target) => path.resolve(target)))];
+  const prepared = [];
+  for (const target of targets) {
+    try {
+      await assertNoLinkedPathSegments(target);
+      const { parent, info } = await nearestExistingParent(target);
+      if (!info.isDirectory()) {
+        throw new Error("最近存在的父路径不是目录");
+      }
+      await access(parent, constants.W_OK);
+      prepared.push({ targetPath: target, parentDir: parent });
+    } catch (error) {
+      throw new GovernanceError(
+        "TARGET_NOT_WRITABLE",
+        `目标路径不可写：${target}`,
+        { target, cause: error.code ?? error.message }
+      );
+    }
+  }
+  return prepared;
+}
+
+export async function writeUtf8Atomic(filePath, content, {
+  expectedSnapshot,
+  signal
+} = {}) {
+  throwIfAborted(signal);
+  const targetPath = path.resolve(filePath);
+  const expected = expectedSnapshot ?? await snapshotPath(targetPath);
+  await preflightWritableTargets([targetPath]);
+  throwIfAborted(signal);
+
+  let temporaryPath;
+  let temporaryIdentity;
+  try {
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await assertNoLinkedPathSegments(targetPath);
+    throwIfAborted(signal);
+
+    temporaryPath = path.join(
+      path.dirname(targetPath),
+      `.${path.basename(targetPath)}.${process.pid}.${randomUUID()}.tmp`
+    );
+    const handle = await open(temporaryPath, "wx");
+    try {
+      temporaryIdentity = await handle.stat();
+      throwIfAborted(signal);
+      await handle.writeFile(content, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+
+    throwIfAborted(signal);
+    await assertNoLinkedPathSegments(targetPath);
+    await assertSnapshotUnchanged(expected);
+    throwIfAborted(signal);
+
+    if (expected.exists) {
+      await rename(temporaryPath, targetPath);
+    } else {
+      await link(temporaryPath, targetPath);
+      await unlink(temporaryPath);
+    }
+    temporaryIdentity = undefined;
+  } finally {
+    await cleanupOwnedTemporary(temporaryPath, temporaryIdentity);
+  }
 }

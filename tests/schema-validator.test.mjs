@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { resolveInside } from "../tooling/lib/files.mjs";
+import { createProjectContext } from "../tooling/lib/manifest.mjs";
+import { fileURLToPath } from "node:url";
+import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { validateSchema } from "../tooling/lib/schema-validator.mjs";
 
 test("accepts a valid project manifest", () => {
@@ -68,4 +73,30 @@ test("rejects paths outside the workspace", () => {
     () => resolveInside("C:/workspace/demo", "../outside"),
     (error) => error.code === "UNSAFE_PATH"
   );
+});
+
+test("creates project context from an in-memory manifest", async (t) => {
+  const kitRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const workspaceDir = await mkdtemp(path.join(tmpdir(), "governance-context-"));
+  t.after(() => rm(workspaceDir, { recursive: true, force: true }));
+  await mkdir(path.join(workspaceDir, "server"));
+  const manifest = {
+    schemaVersion: 1,
+    project: { name: "demo", repositoryMode: "monorepo" },
+    components: {
+      server: { profile: "java-springboot-mybatis", path: "server" }
+    },
+    contracts: { statusRegistryOwner: "server", apiContractOwner: "server" },
+    generation: { conflictPolicy: "report" }
+  };
+
+  const context = await createProjectContext({
+    workspaceDir,
+    kitRoot,
+    manifest,
+    requireComponentDirs: true
+  });
+
+  assert.equal(context.manifest, manifest);
+  assert.equal(context.components.server.rootDir, path.join(workspaceDir, "server"));
 });
