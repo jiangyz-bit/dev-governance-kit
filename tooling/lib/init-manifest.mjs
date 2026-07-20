@@ -10,7 +10,8 @@ function compareStrings(left, right) {
 }
 
 function normalizedPath(value) {
-  if (typeof value !== "string" || value.length === 0) return null;
+  if (typeof value !== "string") return null;
+  if (value.length === 0) return ".";
   const normalized = value.replace(/\\/g, "/").replace(/^\.\//, "");
   if (path.posix.isAbsolute(normalized) || path.win32.isAbsolute(value) || normalized.split("/").includes("..")) return null;
   return normalized || ".";
@@ -109,6 +110,11 @@ function markerRoot(marker) {
   return path.resolve(marker.rootDir);
 }
 
+function samePath(left, right) {
+  if (process.platform === "win32") return left.toLowerCase() === right.toLowerCase();
+  return left === right;
+}
+
 function isAncestor(ancestor, target) {
   const relative = path.relative(ancestor, target);
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
@@ -137,6 +143,15 @@ function inferRepositoryMode(candidates, gitMarkers) {
   }
   if (uniqueRoots.size === candidates.length) return "multi-repo";
   return { code: "REPOSITORY_MODE_UNCLEAR", reason: "HYBRID_GIT_BOUNDARIES" };
+}
+
+function hasNestedGitRepository(candidates, gitMarkers, workspaceDir) {
+  const workspaceRoot = path.resolve(workspaceDir);
+  const markerRoots = gitMarkers.map(markerRoot).filter(Boolean);
+  if (!markerRoots.some((rootDir) => samePath(rootDir, workspaceRoot))) return false;
+  return candidates.some((candidate) => markerRoots.some((rootDir) => (
+    !samePath(rootDir, workspaceRoot) && isAncestor(candidate.rootDir, rootDir)
+  )));
 }
 
 function repositoryModeAnswer(answers) {
@@ -182,14 +197,14 @@ export function resolveInitManifest({ workspaceDir, detection, answers = {} }) {
   if (components.status === "needs_input") return components;
 
   const selectedCandidates = componentOrder.filter((component) => components[component]).map((component) => components[component]);
+  const candidatesWithRoots = selectedCandidates.map((candidate) => ({
+    ...candidate,
+    rootDir: path.resolve(workspaceDir, candidate.path)
+  }));
   const repositoryMode = repositoryModeAnswer(answers)
-    ?? inferRepositoryMode(
-      selectedCandidates.map((candidate) => ({
-        ...candidate,
-        rootDir: path.resolve(workspaceDir, candidate.path)
-      })),
-      detection.gitMarkers ?? []
-    );
+    ?? (hasNestedGitRepository(candidatesWithRoots, detection.gitMarkers ?? [], workspaceDir)
+      ? { code: "REPOSITORY_MODE_UNCLEAR", reason: "NESTED_GIT_REPOSITORY" }
+      : inferRepositoryMode(candidatesWithRoots, detection.gitMarkers ?? []));
   if (typeof repositoryMode !== "string") {
     return resultWithQuestion(repositoryMode.code, detection, repositoryMode);
   }

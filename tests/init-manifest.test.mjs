@@ -230,3 +230,45 @@ test("keeps absolute component paths out of the generated manifest", async (t) =
   assert.equal(result.questions[0].code, "COMPONENT_PATH_INVALID");
   assert.equal(result.manifest, null);
 });
+
+test("normalizes workspace-root component candidates to schema-valid dot paths", async (t) => {
+  const workspaceDir = await workspace(t);
+  const result = resolveInitManifest({
+    workspaceDir,
+    detection: detection({
+      candidates: [
+        { ...components.client, path: "" },
+        { ...components.admin, path: "" },
+        { ...components.server, path: "" }
+      ],
+      gitMarkers: [gitMarker(workspaceDir)]
+    }),
+    answers: {}
+  });
+
+  assert.equal(result.status, "ready");
+  assert.deepEqual(Object.values(result.manifest.components).map((component) => component.path), [".", ".", "."]);
+  assert.doesNotThrow(() => validateSchema("governance-kit", result.manifest));
+  assert.doesNotMatch(renderInitManifest(result.manifest), /\\/);
+});
+
+test("blocks nested Git repositories below selected components until repository mode is answered", async (t) => {
+  const workspaceDir = await workspace(t);
+  const input = {
+    workspaceDir,
+    detection: detection({
+      candidates: [components.server, components.admin],
+      gitMarkers: [gitMarker(workspaceDir), gitMarker(workspaceDir, "apps/admin/plugins/nested-repo")]
+    })
+  };
+
+  for (const answers of [{}, { yes: true }]) {
+    const result = resolveInitManifest({ ...input, answers });
+    assert.equal(result.status, "needs_input");
+    assert.equal(result.questions[0].code, "REPOSITORY_MODE_UNCLEAR");
+  }
+
+  const resolved = resolveInitManifest({ ...input, answers: { repositoryMode: "monorepo" } });
+  assert.equal(resolved.status, "ready");
+  assert.equal(resolved.manifest.project.repositoryMode, "monorepo");
+});
