@@ -55,6 +55,65 @@ test("help advertises init but not the unimplemented create command", async () =
   assert.doesNotMatch(source, /governance-kit create/);
 });
 
+test("npm package contains runtime files but excludes internal project material", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "governance-pack-list-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const packed = await run(
+    npmCommand,
+    [
+      ...npmPrefix,
+      "pack",
+      "--dry-run",
+      "--json",
+      "--pack-destination",
+      root
+    ],
+    { cwd: kitRoot }
+  );
+  assert.equal(packed.code, 0, packed.stderr);
+  const metadata = JSON.parse(packed.stdout);
+  assert.equal(metadata.length, 1);
+  const files = new Set(metadata[0].files.map((entry) => (
+    entry.path.replaceAll("\\", "/")
+  )));
+
+  for (const required of [
+    "package.json",
+    "README.md",
+    "LICENSE",
+    "tooling/cli.mjs",
+    "tooling/index.mjs",
+    "tooling/lib/init.mjs",
+    "core/rules/agent-workflow.md",
+    "schemas/governance-kit.schema.json",
+    "templates/server/AGENTS.md",
+    "profiles/java-springboot-mybatis/profile.yaml",
+    "blueprints/java-react-wechat.yaml",
+    "docs/MANIFEST_REFERENCE.md"
+  ]) {
+    assert.ok(files.has(required), `安装包缺少运行文件：${required}`);
+  }
+
+  for (const leaked of files) {
+    assert.equal(/^tests\//.test(leaked), false, `不应发布测试：${leaked}`);
+    assert.equal(
+      /^docs\/superpowers\//.test(leaked),
+      false,
+      `不应发布内部设计资料：${leaked}`
+    );
+    assert.equal(
+      leaked === "docs/MIGRATION_FROM_V1_TEMPLATES.md",
+      false,
+      `不应发布废弃迁移资料：${leaked}`
+    );
+    assert.equal(
+      /^\.superpowers\//.test(leaked),
+      false,
+      `不应发布工作树 scratch：${leaked}`
+    );
+  }
+});
+
 test("packed CLI runs after a clean local install", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "governance-package-"));
   t.after(() => rm(root, { recursive: true, force: true }));

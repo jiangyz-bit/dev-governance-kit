@@ -10,6 +10,17 @@
   "bin": {
     "governance-kit": "./tooling/cli.mjs"
   },
+  "files": [
+    "tooling/",
+    "core/rules/",
+    "schemas/",
+    "templates/",
+    "profiles/",
+    "blueprints/",
+    "docs/MANIFEST_REFERENCE.md",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "governance-kit": "node tooling/cli.mjs",
     "test": "node --test tests/*.test.mjs",

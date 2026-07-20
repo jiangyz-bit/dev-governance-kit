@@ -313,6 +313,54 @@ test("an injected abort maps to interrupted and exit code 130", async (t) => {
   assert.equal(exitCodeFor(result), 130);
 });
 
+test("abort while the final prompt is pending exits 130 and closes once", async (t) => {
+  const workspace = await createSupportedWorkspace(t);
+  const before = await snapshotWorkspace(workspace);
+  const { main } = await loadCliModule();
+  const controller = new AbortController();
+  const output = memoryOutput();
+  const error = memoryOutput();
+  let closeCalls = 0;
+  let promptStartedResolve;
+  const promptStarted = new Promise((resolve) => {
+    promptStartedResolve = resolve;
+  });
+
+  const running = main(["init", "--workspace", workspace], {
+    input: { isTTY: true },
+    output,
+    error,
+    signal: controller.signal
+  }, {
+    createPromptSession({ signal }) {
+      return {
+        signal,
+        async confirm() {
+          promptStartedResolve();
+          await new Promise((resolve, reject) => {
+            signal.addEventListener("abort", () => {
+              const aborted = new Error("aborted");
+              aborted.name = "AbortError";
+              reject(aborted);
+            }, { once: true });
+          });
+        },
+        close() { closeCalls += 1; }
+      };
+    }
+  });
+
+  await promptStarted;
+  controller.abort();
+  const code = await running;
+
+  assert.equal(code, 130);
+  assert.equal(error.value(), "");
+  assert.match(output.value(), /操作已中断/);
+  assert.equal(closeCalls, 1);
+  assert.deepEqual(await snapshotWorkspace(workspace), before);
+});
+
 test("fixed business statuses map to stable exit codes", async () => {
   const { exitCodeFor } = await loadCliModule();
   for (const status of ["planned", "cancelled", "applied"]) {
