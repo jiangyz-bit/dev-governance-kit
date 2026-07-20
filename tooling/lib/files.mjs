@@ -206,19 +206,31 @@ export async function assertSnapshotUnchanged(expected) {
   }
 }
 
-export async function preflightWritableTargets(targetPaths) {
+export async function preflightWritableTargets(targetPaths, { signal } = {}) {
+  throwIfAborted(signal);
   const targets = [...new Set(targetPaths.map((target) => path.resolve(target)))];
   const prepared = [];
   for (const target of targets) {
+    throwIfAborted(signal);
     try {
       await assertNoLinkedPathSegments(target);
+      throwIfAborted(signal);
       const { parent, info } = await nearestExistingParent(target);
+      throwIfAborted(signal);
       if (!info.isDirectory()) {
         throw new Error("最近存在的父路径不是目录");
       }
       await access(parent, constants.W_OK);
+      throwIfAborted(signal);
       prepared.push({ targetPath: target, parentDir: parent });
     } catch (error) {
+      if (
+        signal?.aborted
+        || error.name === "AbortError"
+        || error.code === "ABORT_ERR"
+      ) {
+        throw error;
+      }
       throw new GovernanceError(
         "TARGET_NOT_WRITABLE",
         `目标路径不可写：${target}`,
@@ -226,6 +238,7 @@ export async function preflightWritableTargets(targetPaths) {
       );
     }
   }
+  throwIfAborted(signal);
   return prepared;
 }
 
@@ -270,7 +283,7 @@ export async function writeUtf8Atomic(filePath, content, {
   throwIfAborted(signal);
   const targetPath = path.resolve(filePath);
   const expected = expectedSnapshot ?? await snapshotPath(targetPath);
-  await preflightWritableTargets([targetPath]);
+  await preflightWritableTargets([targetPath], { signal });
   throwIfAborted(signal);
 
   let temporaryPath;

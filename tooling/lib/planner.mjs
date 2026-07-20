@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { GovernanceError } from "./errors.mjs";
@@ -28,11 +29,13 @@ async function listFiles(rootDir, relativeDir = "") {
 
 function managedContent(content, targetPath, sourceId, sourceVersion) {
   const extension = path.extname(targetPath).toLowerCase();
+  const contentHash = createHash("sha256").update(content, "utf8").digest("hex");
   if (extension === ".md") {
     return [
       "<!-- governance-kit:managed -->",
       `<!-- source-id: ${sourceId} -->`,
       `<!-- source-version: ${sourceVersion} -->`,
+      `<!-- content-hash: ${contentHash} -->`,
       "",
       content
     ].join("\n");
@@ -42,6 +45,7 @@ function managedContent(content, targetPath, sourceId, sourceVersion) {
       "// governance-kit:managed",
       `// source-id: ${sourceId}`,
       `// source-version: ${sourceVersion}`,
+      `// content-hash: ${contentHash}`,
       "",
       content
     ].join("\n");

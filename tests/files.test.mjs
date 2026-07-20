@@ -215,6 +215,31 @@ test("preflights every target parent before any write", async (t) => {
   assert.equal(await readFile(blockedParent, "utf8"), "not a directory");
 });
 
+test("preflight writable targets stops at an aborted signal", async (t) => {
+  const workspaceDir = await makeWorkspace(t);
+  const target = path.join(workspaceDir, "target.txt");
+  const signal = AbortSignal.abort();
+
+  await assert.rejects(
+    preflightWritableTargets([target], { signal }),
+    (error) => error.name === "AbortError"
+  );
+  await assert.rejects(readFile(target, "utf8"), { code: "ENOENT" });
+});
+
+test("preflight preserves an abort that arrives during a target check", async (t) => {
+  const workspaceDir = await makeWorkspace(t);
+  const target = path.join(workspaceDir, "target.txt");
+  const controller = new AbortController();
+  queueMicrotask(() => controller.abort());
+
+  await assert.rejects(
+    preflightWritableTargets([target], { signal: controller.signal }),
+    (error) => error.name === "AbortError"
+  );
+  await assert.rejects(readFile(target, "utf8"), { code: "ENOENT" });
+});
+
 test("writes atomically only when the preview snapshot remains current", async (t) => {
   const workspaceDir = await makeWorkspace(t);
   const target = path.join(workspaceDir, "target.txt");

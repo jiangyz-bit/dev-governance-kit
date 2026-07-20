@@ -94,7 +94,11 @@ function stripManagedHeader(content) {
   if (!normalized.startsWith("<!-- governance-kit:managed -->\n")) {
     return normalized;
   }
-  return normalized.split("\n").slice(4).join("\n");
+  const lines = normalized.split("\n");
+  const separator = lines.indexOf("", 1);
+  return separator === -1
+    ? normalized
+    : lines.slice(separator + 1).join("\n");
 }
 
 function sortDiagnostics(values) {

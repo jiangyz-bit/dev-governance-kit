@@ -40,6 +40,20 @@ const defaultKitRoot = path.resolve(
   ".."
 );
 
+const expectedPrewriteFileSystemCodes = new Set([
+  "EACCES",
+  "EBUSY",
+  "EISDIR",
+  "ELOOP",
+  "EMFILE",
+  "ENFILE",
+  "ENOENT",
+  "ENOSPC",
+  "ENOTDIR",
+  "EPERM",
+  "EROFS"
+]);
+
 function interruptedError(message = "用户中断初始化") {
   return new GovernanceError("INTERRUPTED", message);
 }
@@ -62,6 +76,16 @@ function stableError(error, fallbackCode = "INIT_FAILED") {
     message: error?.message ?? "初始化失败",
     details: {}
   };
+}
+
+function isExpectedPrewriteError(error) {
+  return error instanceof GovernanceError
+    || expectedPrewriteFileSystemCodes.has(error?.code);
+}
+
+function isManifestInputError(error) {
+  return isExpectedPrewriteError(error)
+    || /^YAML/i.test(error?.name ?? "");
 }
 
 function normalizeExecutionError(error, signal) {
@@ -375,6 +399,7 @@ async function finalizePlan(plan, {
     await preflightInitTargets({ plan, preflightTargets, signal });
   } catch (error) {
     if (isInterrupted(error, signal)) throw error;
+    if (!isExpectedPrewriteError(error)) throw error;
     return prewriteConflictResult(plan, normalizeExecutionError(error, signal));
   }
   return plan;
@@ -414,6 +439,7 @@ async function planInitializationUnsafe({
     throwIfAborted(signal);
   } catch (error) {
     if (isInterrupted(error, signal)) throw error;
+    if (!isExpectedPrewriteError(error)) throw error;
     return planningConflictResult(
       resolvedWorkspace,
       normalizeExecutionError(error, signal)
@@ -434,6 +460,7 @@ async function planInitializationUnsafe({
       throwIfAborted(signal);
     } catch (error) {
       if (isInterrupted(error, signal)) throw error;
+      if (!isManifestInputError(error)) throw error;
       return invalidManifestResult(
         resolvedWorkspace,
         normalizeManifestError(error)
@@ -545,7 +572,7 @@ export async function planInitialization(options) {
     if (isInterrupted(error, options?.signal)) {
       return interruptedResultForPlanning(options.workspaceDir);
     }
-    if (error instanceof GovernanceError) {
+    if (isExpectedPrewriteError(error)) {
       return planningConflictResult(
         options.workspaceDir,
         normalizeExecutionError(error, options?.signal)
@@ -567,6 +594,7 @@ function publicResultFields(plan) {
 }
 
 export function plannedResult(plan) {
+  if (plan.report.conflicts.length > 0) return conflictResult(plan);
   return baseResult(plan.workspaceDir, {
     ...publicResultFields(plan),
     ok: true,
@@ -575,6 +603,7 @@ export function plannedResult(plan) {
 }
 
 export function needsFinalConfirmationResult(plan) {
+  if (plan.report.conflicts.length > 0) return conflictResult(plan);
   return baseResult(plan.workspaceDir, {
     ...publicResultFields(plan),
     status: "needs_input",
@@ -718,7 +747,7 @@ export async function executeInitialization(plan, {
   let writePhaseStarted = false;
   try {
     throwIfAborted(signal);
-    await preflightTargets(plan.writableTargets);
+    await preflightTargets(plan.writableTargets, { signal });
     throwIfAborted(signal);
     await assertRealPathInside(
       plan.workspaceDir,

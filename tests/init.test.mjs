@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -105,6 +114,23 @@ function firstWritablePreviewItem(plan) {
     classification.category === "created"
     || classification.category === "updated"
   ));
+}
+
+function fileSystemError(code) {
+  return Object.assign(new Error(`注入文件系统错误：${code}`), { code });
+}
+
+async function createKitCopy(t) {
+  const copyRoot = await mkdtemp(path.join(tmpdir(), "governance-kit-copy-"));
+  t.after(() => rm(copyRoot, { recursive: true, force: true }));
+  for (const directory of ["blueprints", "core", "profiles", "templates"]) {
+    await cp(
+      path.join(kitRoot, directory),
+      path.join(copyRoot, directory),
+      { recursive: true }
+    );
+  }
+  return copyRoot;
 }
 
 test("plans an absent manifest without writing it", async (t) => {
@@ -283,6 +309,91 @@ test("does not write anything when a governance target conflicts", async (t) => 
   assert.equal(result.status, "conflict");
   assert.equal(result.written.length, 0);
   assert.deepEqual(await snapshotWorkspace(workspaceDir), before);
+});
+
+test("dry-run reports a static governance conflict instead of planned", async (t) => {
+  const workspaceDir = await createSupportedWorkspace(t, {
+    extraFiles: {
+      [`${componentRelativeDir}/AGENTS.md`]: "# 用户规则\n"
+    }
+  });
+  const before = await snapshotWorkspace(workspaceDir);
+
+  const result = await initializeGovernance({
+    workspaceDir,
+    kitRoot,
+    dryRun: true
+  });
+
+  assert.equal(result.status, "conflict");
+  assert.equal(result.code, "INIT_CONFLICT");
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.written, []);
+  assert.deepEqual(await snapshotWorkspace(workspaceDir), before);
+});
+
+test("confirmation request reports a static governance conflict instead of needs_input", async (t) => {
+  const workspaceDir = await createSupportedWorkspace(t, {
+    extraFiles: {
+      [`${componentRelativeDir}/AGENTS.md`]: "# 用户规则\n"
+    }
+  });
+  const before = await snapshotWorkspace(workspaceDir);
+
+  const result = await initializeGovernance({
+    workspaceDir,
+    kitRoot
+  });
+
+  assert.equal(result.status, "conflict");
+  assert.equal(result.code, "INIT_CONFLICT");
+  assert.deepEqual(result.written, []);
+  assert.deepEqual(await snapshotWorkspace(workspaceDir), before);
+});
+
+test("normalizes expected planning filesystem errors without swallowing programming errors", async (t) => {
+  for (const [hook, code] of [
+    ["scan", "EACCES"],
+    ["createPreview", "EPERM"],
+    ["scan", "ENOENT"]
+  ]) {
+    const workspaceDir = await createSupportedWorkspace(t);
+    const before = await snapshotWorkspace(workspaceDir);
+    const result = await planInitialization({
+      workspaceDir,
+      kitRoot,
+      [hook]: async () => {
+        throw fileSystemError(code);
+      }
+    });
+
+    assert.equal(result.status, "conflict");
+    assert.equal(result.code, code);
+    assert.deepEqual(result.written, []);
+    assert.deepEqual(await snapshotWorkspace(workspaceDir), before);
+  }
+
+  const workspaceDir = await createSupportedWorkspace(t);
+  await assert.rejects(
+    planInitialization({
+      workspaceDir,
+      kitRoot,
+      detect: async () => {
+        throw new TypeError("注入编程错误");
+      }
+    }),
+    (error) => error instanceof TypeError
+  );
+  await assert.rejects(
+    planInitialization({
+      workspaceDir,
+      kitRoot,
+      preflightTargets: async () => {
+        throw new TypeError("注入预检编程错误");
+      }
+    }),
+    (error) => error instanceof TypeError
+  );
 });
 
 test("permission preflight checks every writable target once and leaves the workspace unchanged", async (t) => {
@@ -514,6 +625,97 @@ test("never overwrites a user edit made after a partial failure", async (t) => {
   assert.deepEqual(await snapshotWorkspace(workspaceDir), before);
 });
 
+test("never overwrites an edited managed body after a partial failure", async (t) => {
+  const workspaceDir = await createSupportedWorkspace(t);
+  const plan = await planInitialization({ workspaceDir, kitRoot });
+  const item = firstWritablePreviewItem(plan);
+  const first = await executeInitialization(plan, {
+    executePreview: async (preview, { signal }) => {
+      await writeUtf8Atomic(item.operation.targetPath, item.operation.content, {
+        expectedSnapshot: item.snapshot,
+        rootDir: preview.context.workspaceDir,
+        signal
+      });
+      throw new GovernanceError("INJECTED_WRITE_FAILURE", "注入写入失败", {
+        written: [item.operation.targetPath]
+      });
+    }
+  });
+  const managed = await readFile(item.operation.targetPath, "utf8");
+  assert.match(managed, /governance-kit:managed/);
+  assert.match(managed, /source-id:/);
+  assert.match(managed, /source-version:/);
+  await writeFile(
+    item.operation.targetPath,
+    `${managed.replace(/\n$/, "")}\n\n用户保留头部后的正文编辑\n`,
+    "utf8"
+  );
+  const before = await snapshotWorkspace(workspaceDir);
+
+  const rerun = await initializeGovernance({
+    workspaceDir,
+    kitRoot,
+    yes: true
+  });
+
+  assert.equal(first.status, "partial_failure");
+  assert.equal(rerun.status, "conflict");
+  assert.ok(rerun.report.conflicts.some((entry) => (
+    entry.path === item.operation.targetPath
+    && entry.code === "USER_FILE_CONFLICT"
+  )));
+  assert.deepEqual(await snapshotWorkspace(workspaceDir), before);
+});
+
+test("content evidence still permits a normal managed template upgrade", async (t) => {
+  const workspaceDir = await createSupportedWorkspace(t);
+  const copiedKitRoot = await createKitCopy(t);
+  const first = await initializeGovernance({
+    workspaceDir,
+    kitRoot: copiedKitRoot,
+    yes: true
+  });
+  assert.equal(first.status, "applied");
+  const targetPath = path.join(
+    workspaceDir,
+    componentRelativeDir,
+    "docs",
+    "API_RULES.md"
+  );
+  assert.match(
+    await readFile(targetPath, "utf8"),
+    /content-hash:\s*[0-9a-f]{64}/
+  );
+  const templatePath = path.join(
+    copiedKitRoot,
+    "templates",
+    "server",
+    "docs",
+    "API_RULES.md"
+  );
+  await writeFile(
+    templatePath,
+    `${await readFile(templatePath, "utf8")}\n升级后的受管规则。\n`,
+    "utf8"
+  );
+
+  const plan = await planInitialization({
+    workspaceDir,
+    kitRoot: copiedKitRoot
+  });
+  const result = await initializeGovernance({
+    workspaceDir,
+    kitRoot: copiedKitRoot,
+    yes: true
+  });
+
+  assert.equal(plan.status, "ready");
+  assert.equal(plan.report.conflicts.length, 0);
+  assert.ok(plan.report.updated.some((entry) => entry.path === targetPath));
+  assert.equal(result.status, "applied");
+  assert.match(await readFile(targetPath, "utf8"), /升级后的受管规则/);
+});
+
 test("reports validation failure as applied true and valid false", async (t) => {
   const workspaceDir = await createSupportedWorkspace(t);
   const plan = await planInitialization({ workspaceDir, kitRoot });
@@ -631,6 +833,27 @@ test("validation interruption after writes reports exact recovery state", async 
   assert.equal(result.applied, true);
   assert.ok(result.written.length > 1);
   assert.equal(result.recovery.safeToRerun, true);
+});
+
+test("execution preflight receives the same signal and interrupts before writing", async (t) => {
+  const workspaceDir = await createSupportedWorkspace(t);
+  const plan = await planInitialization({ workspaceDir, kitRoot });
+  const controller = new AbortController();
+  const before = await snapshotWorkspace(workspaceDir);
+
+  const result = await executeInitialization(plan, {
+    signal: controller.signal,
+    preflightTargets: async (_targets, { signal }) => {
+      assert.equal(signal, controller.signal);
+      controller.abort();
+      signal.throwIfAborted();
+    }
+  });
+
+  assert.equal(result.status, "interrupted");
+  assert.equal(result.code, "INTERRUPTED");
+  assert.deepEqual(result.written, []);
+  assert.deepEqual(await snapshotWorkspace(workspaceDir), before);
 });
 
 test("executeInitialization uses the supplied preview and never replans through apply", async (t) => {

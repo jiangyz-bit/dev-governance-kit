@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { GovernanceError } from "./errors.mjs";
 import {
   assertRealPathInside,
@@ -14,22 +15,25 @@ function throwIfAborted(signal) {
 }
 
 function parseManagedMetadata(content) {
-  const lines = content.split(/\r?\n/);
-  const sourceLine = lines.find((line) => line.includes("source-id:"));
-  const versionLine = lines.find((line) => line.includes("source-version:"));
-  if (!sourceLine || !versionLine || !content.includes("governance-kit:managed")) {
-    return undefined;
-  }
-  const cleanValue = (line, key) => line
-    .slice(line.indexOf(key) + key.length)
-    .replace(/-->\s*$/, "")
-    .trim();
-  const sourceId = cleanValue(sourceLine, "source-id:");
-  const sourceVersion = Number.parseInt(cleanValue(versionLine, "source-version:"), 10);
+  const markdown = /^<!-- governance-kit:managed -->\n<!-- source-id: ([^\r\n]+) -->\n<!-- source-version: (\d+) -->(?:\n<!-- content-hash: ([0-9a-f]{64}) -->)?\n\n([\s\S]*)$/i;
+  const script = /^\/\/ governance-kit:managed\n\/\/ source-id: ([^\r\n]+)\n\/\/ source-version: (\d+)(?:\n\/\/ content-hash: ([0-9a-f]{64}))?\n\n([\s\S]*)$/i;
+  const match = markdown.exec(content) ?? script.exec(content);
+  if (!match) return undefined;
+  const sourceId = match[1].trim();
+  const sourceVersion = Number.parseInt(match[2], 10);
   if (!sourceId || !Number.isInteger(sourceVersion)) {
     return undefined;
   }
-  return { sourceId, sourceVersion };
+  return {
+    sourceId,
+    sourceVersion,
+    contentHash: match[3]?.toLowerCase(),
+    body: match[4]
+  };
+}
+
+function contentHash(content) {
+  return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
 function reportEntry(operation, code, details = {}) {
@@ -69,6 +73,18 @@ function classify(operation, existing) {
       entry: reportEntry(operation, "SOURCE_VERSION_MISMATCH", {
         expectedVersion: operation.sourceVersion,
         actualVersion: metadata.sourceVersion
+      })
+    };
+  }
+  const candidate = parseManagedMetadata(operation.content);
+  const contentMatchesEvidence = metadata.contentHash
+    ? contentHash(metadata.body) === metadata.contentHash
+    : candidate?.body === metadata.body;
+  if (!contentMatchesEvidence) {
+    return {
+      category: "conflicts",
+      entry: reportEntry(operation, "USER_FILE_CONFLICT", {
+        reason: "MANAGED_CONTENT_CHANGED"
       })
     };
   }
