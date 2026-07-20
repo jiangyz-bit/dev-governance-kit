@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyGovernance } from "./lib/apply.mjs";
@@ -23,6 +24,25 @@ const usage = `用法：
   governance-kit validate --workspace <path> [--json]
   governance-kit --help
 `;
+const packageRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  ".."
+);
+
+async function addRuntimeEvidence(result) {
+  const packageJson = JSON.parse(await readFile(
+    path.join(packageRoot, "package.json"),
+    "utf8"
+  ));
+  return {
+    ...result,
+    version: packageJson.version,
+    runtime: {
+      ...(result.runtime ?? {}),
+      packageRoot
+    }
+  };
+}
 
 function usageError(message) {
   const error = new Error(message);
@@ -414,6 +434,9 @@ export async function main(
     }
 
     if (options.json) {
+      if (options.command === "init" && options.verbose) {
+        result = await addRuntimeEvidence(result);
+      }
       let serialized;
       try {
         serialized = (dependencies.stringify ?? JSON.stringify)(
