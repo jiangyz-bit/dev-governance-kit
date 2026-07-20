@@ -258,7 +258,9 @@ function portableTarPackagePath(archivePath) {
 }
 
 export async function readTarballEntries(tarball) {
-  const archive = gunzipSync(await readFile(tarball));
+  const archive = gunzipSync(
+    Buffer.isBuffer(tarball) ? tarball : await readFile(tarball)
+  );
   const entries = new Map();
   let offset = 0;
   let pendingPath;

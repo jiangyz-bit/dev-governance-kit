@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Source / ${{ matrix.os }} / Node ${{ matrix.node }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        node: ["20.20.2", "22", "24"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # refs/tags/v6
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # refs/tags/v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm audit --omit=dev
+
+  package-smoke:
+    name: Tarball / ${{ matrix.os }} / Node 24
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # refs/tags/v6
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # refs/tags/v6
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm run test:package
+
+  release-candidate:
+    name: Build release candidate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test, package-smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # refs/tags/v6
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # refs/tags/v6
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - name: Pack and bind candidate evidence
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .release
+          npm pack --json --pack-destination .release > .release/pack.json
+          VERSION="$(node -p "require('./package.json').version")"
+          node tooling/release-evidence.mjs create \
+            --commit "$GITHUB_SHA" \
+            --pack-json .release/pack.json \
+            --directory .release \
+            --output .release/release-evidence.json
+          FILENAME="$(node -e "const p=require('./.release/pack.json'); process.stdout.write(p[0].filename)")"
+          node tooling/release-evidence.mjs verify \
+            --evidence .release/release-evidence.json \
+            --tarball ".release/$FILENAME" \
+            --expected-commit "$GITHUB_SHA" \
+            --expected-version "$VERSION"
+          node --input-type=module -e '
+            import { appendFileSync, readFileSync } from "node:fs";
+            const [entry] = JSON.parse(readFileSync(".release/pack.json", "utf8"));
+            const version = entry?.version;
+            const filename = entry?.filename;
+            const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+            const unsafe = /[\u0000-\u001f\u007f]/;
+            if (
+              !semver.test(version)
+              || unsafe.test(version)
+              || unsafe.test(filename)
+              || filename !== `dev-governance-kit-${version}.tgz`
+            ) {
+              throw new Error("npm pack version/filename is unsafe");
+            }
+            appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\nfilename=${filename}\n`, "utf8");
+          '
+      - name: Upload the only release candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # refs/tags/v4
+        with:
+          name: dev-governance-kit-${{ steps.pack.outputs.version }}-${{ github.sha }}
+          path: |
+            .release/${{ steps.pack.outputs.filename }}
+            .release/release-evidence.json
+          if-no-files-found: error
+          retention-days: 90
