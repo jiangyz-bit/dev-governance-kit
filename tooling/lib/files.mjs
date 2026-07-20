@@ -102,6 +102,10 @@ export async function assertRealPathInside(rootDir, targetPath, {
   allowMissing = false
 } = {}) {
   const rootResolved = path.resolve(rootDir);
+  const rootInfo = await lstat(rootResolved);
+  if (rootInfo.isSymbolicLink()) {
+    throw unsafeRealPath(rootResolved, rootResolved, `工作区根路径是符号链接：${rootResolved}`);
+  }
   const rootReal = await realpath(rootResolved);
   const target = path.resolve(targetPath);
   if (!isInside(rootResolved, target)) {
@@ -217,10 +221,44 @@ export async function preflightWritableTargets(targetPaths) {
   return prepared;
 }
 
+export function detectStaleTempFiles(targetPaths, observedPaths) {
+  const targets = [...new Set(targetPaths.map((target) => path.resolve(target)))];
+  const candidates = [...new Set(observedPaths.map((candidate) => path.resolve(candidate)))];
+  const warnings = [];
+  for (const target of targets) {
+    const prefix = `.${path.basename(target)}.`;
+    for (const candidate of candidates) {
+      if (path.dirname(candidate) !== path.dirname(target)) continue;
+      const name = path.basename(candidate);
+      if (!name.startsWith(prefix) || !name.endsWith(".tmp")) continue;
+      const identity = name.slice(prefix.length, -4);
+      const separator = identity.indexOf(".");
+      if (separator === -1) continue;
+      const pid = identity.slice(0, separator);
+      const uuid = identity.slice(separator + 1);
+      if (
+        !/^\d+$/.test(pid)
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(uuid)
+      ) {
+        continue;
+      }
+      warnings.push({
+        code: "STALE_TEMP_FILE",
+        path: candidate,
+        targetPath: target
+      });
+    }
+  }
+  return warnings.sort((left, right) => left.path.localeCompare(right.path));
+}
+
 export async function writeUtf8Atomic(filePath, content, {
   expectedSnapshot,
-  signal
+  signal,
+  fsOperations = {}
 } = {}) {
+  const openTemporary = fsOperations.open ?? open;
+  const renameTarget = fsOperations.rename ?? rename;
   throwIfAborted(signal);
   const targetPath = path.resolve(filePath);
   const expected = expectedSnapshot ?? await snapshotPath(targetPath);
@@ -238,7 +276,7 @@ export async function writeUtf8Atomic(filePath, content, {
       path.dirname(targetPath),
       `.${path.basename(targetPath)}.${process.pid}.${randomUUID()}.tmp`
     );
-    const handle = await open(temporaryPath, "wx");
+    const handle = await openTemporary(temporaryPath, "wx");
     try {
       temporaryIdentity = await handle.stat();
       throwIfAborted(signal);
@@ -254,7 +292,7 @@ export async function writeUtf8Atomic(filePath, content, {
     throwIfAborted(signal);
 
     if (expected.exists) {
-      await rename(temporaryPath, targetPath);
+      await renameTarget(temporaryPath, targetPath);
     } else {
       await link(temporaryPath, targetPath);
       await unlink(temporaryPath);

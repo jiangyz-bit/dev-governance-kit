@@ -1,11 +1,22 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
   assertRealPathInside,
   assertSnapshotUnchanged,
+  detectStaleTempFiles,
   preflightWritableTargets,
   snapshotPath,
   writeUtf8Atomic
@@ -39,6 +50,27 @@ test("rejects a component symlink that resolves outside the workspace", async (t
 
   await assert.rejects(
     assertRealPathInside(workspaceDir, linkedPath, { allowMissing: false }),
+    (error) => error.code === "UNSAFE_REAL_PATH"
+  );
+});
+
+test("rejects a workspace root that is itself a symlink or junction", async (t) => {
+  const parentDir = await makeWorkspace(t);
+  const actualRoot = path.join(parentDir, "actual-root");
+  const linkedRoot = path.join(parentDir, "linked-root");
+  await mkdir(actualRoot);
+  await writeFile(path.join(actualRoot, "file.txt"), "safe", "utf8");
+  if (!await createLink(
+    t,
+    actualRoot,
+    linkedRoot,
+    process.platform === "win32" ? "junction" : "dir"
+  )) return;
+
+  await assert.rejects(
+    assertRealPathInside(linkedRoot, path.join(linkedRoot, "file.txt"), {
+      allowMissing: false
+    }),
     (error) => error.code === "UNSAFE_REAL_PATH"
   );
 });
@@ -148,4 +180,172 @@ test("stops before writing when the signal is already aborted", async (t) => {
     (error) => error.name === "AbortError"
   );
   await assert.rejects(readFile(target, "utf8"), { code: "ENOENT" });
+});
+
+test("reports stale UUID temporary files without deleting or trusting them", async (t) => {
+  const workspaceDir = await makeWorkspace(t);
+  const target = path.join(workspaceDir, "target.txt");
+  const staleTemporary = path.join(
+    workspaceDir,
+    ".target.txt.999.00000000-0000-4000-8000-000000000000.tmp"
+  );
+  await writeFile(target, "before", "utf8");
+  await writeFile(staleTemporary, "untrusted stale content", "utf8");
+
+  const observedPaths = (await readdir(workspaceDir))
+    .map((name) => path.join(workspaceDir, name));
+  const warnings = detectStaleTempFiles([target, target], observedPaths);
+  assert.deepEqual(warnings, [{
+    code: "STALE_TEMP_FILE",
+    path: staleTemporary,
+    targetPath: target
+  }]);
+
+  const snapshot = await snapshotPath(target);
+  await writeUtf8Atomic(target, "after", { expectedSnapshot: snapshot });
+
+  assert.equal(await readFile(target, "utf8"), "after");
+  assert.equal(await readFile(staleTemporary, "utf8"), "untrusted stale content");
+  const observedAfterRerun = (await readdir(workspaceDir))
+    .map((name) => path.join(workspaceDir, name));
+  assert.deepEqual(detectStaleTempFiles([target], observedAfterRerun), warnings);
+});
+
+test("rejects a regular target changed to a link after preview and cleans its temporary", async (t) => {
+  const workspaceDir = await makeWorkspace(t);
+  const outsideDir = await mkdtemp(path.join(tmpdir(), "governance-link-target-"));
+  t.after(() => rm(outsideDir, { recursive: true, force: true }));
+  const target = path.join(workspaceDir, "target.txt");
+  await writeFile(target, "before", "utf8");
+  const snapshot = await snapshotPath(target);
+  let temporaryPath;
+
+  await assert.rejects(
+    writeUtf8Atomic(target, "after", {
+      expectedSnapshot: snapshot,
+      fsOperations: {
+        open: async (...args) => {
+          temporaryPath = args[0];
+          const handle = await open(...args);
+          await rm(target);
+          await symlink(
+            outsideDir,
+            target,
+            process.platform === "win32" ? "junction" : "dir"
+          );
+          return handle;
+        }
+      }
+    }),
+    (error) => error.code === "UNSAFE_REAL_PATH"
+  );
+  await assert.rejects(readFile(temporaryPath, "utf8"), { code: "ENOENT" });
+});
+
+test("does not delete a preoccupied temporary path", async (t) => {
+  const workspaceDir = await makeWorkspace(t);
+  const target = path.join(workspaceDir, "target.txt");
+  let temporaryPath;
+
+  await assert.rejects(
+    writeUtf8Atomic(target, "ours", {
+      fsOperations: {
+        open: async (...args) => {
+          temporaryPath = args[0];
+          await writeFile(temporaryPath, "occupied", "utf8");
+          return open(...args);
+        }
+      }
+    }),
+    (error) => error.code === "EEXIST"
+  );
+  assert.equal(await readFile(temporaryPath, "utf8"), "occupied");
+  await assert.rejects(readFile(target, "utf8"), { code: "ENOENT" });
+});
+
+test("cleans its temporary file when atomic rename fails", async (t) => {
+  const workspaceDir = await makeWorkspace(t);
+  const target = path.join(workspaceDir, "target.txt");
+  await writeFile(target, "before", "utf8");
+  const snapshot = await snapshotPath(target);
+  let temporaryPath;
+  const renameError = Object.assign(new Error("rename failed"), { code: "EACCES" });
+
+  await assert.rejects(
+    writeUtf8Atomic(target, "after", {
+      expectedSnapshot: snapshot,
+      fsOperations: {
+        open: async (...args) => {
+          temporaryPath = args[0];
+          return open(...args);
+        },
+        rename: async () => {
+          throw renameError;
+        }
+      }
+    }),
+    (error) => error === renameError
+  );
+  assert.equal(await readFile(target, "utf8"), "before");
+  await assert.rejects(readFile(temporaryPath, "utf8"), { code: "ENOENT" });
+});
+
+test("cleans its temporary file when Windows rename-over-existing fails", {
+  skip: process.platform !== "win32"
+}, async (t) => {
+  const workspaceDir = await makeWorkspace(t);
+  const target = path.join(workspaceDir, "target.txt");
+  await writeFile(target, "before", "utf8");
+  const snapshot = await snapshotPath(target);
+  let temporaryPath;
+  const renameError = Object.assign(new Error("destination exists"), { code: "EEXIST" });
+
+  await assert.rejects(
+    writeUtf8Atomic(target, "after", {
+      expectedSnapshot: snapshot,
+      fsOperations: {
+        open: async (...args) => {
+          temporaryPath = args[0];
+          return open(...args);
+        },
+        rename: async () => {
+          throw renameError;
+        }
+      }
+    }),
+    (error) => error === renameError
+  );
+  assert.equal(await readFile(target, "utf8"), "before");
+  await assert.rejects(readFile(temporaryPath, "utf8"), { code: "ENOENT" });
+});
+
+test("stops at the next checkpoint when aborted during execution", async (t) => {
+  const workspaceDir = await makeWorkspace(t);
+  const target = path.join(workspaceDir, "target.txt");
+  const controller = new AbortController();
+  let temporaryPath;
+
+  await assert.rejects(
+    writeUtf8Atomic(target, "content", {
+      signal: controller.signal,
+      fsOperations: {
+        open: async (...args) => {
+          temporaryPath = args[0];
+          const handle = await open(...args);
+          return {
+            stat: (...methodArgs) => handle.stat(...methodArgs),
+            writeFile: (...methodArgs) => handle.writeFile(...methodArgs),
+            sync: async () => {
+              await handle.sync();
+              controller.abort();
+            },
+            close: (...methodArgs) => handle.close(...methodArgs)
+          };
+        }
+      }
+    }),
+    (error) => error.name === "AbortError"
+  );
+  await assert.rejects(readFile(target, "utf8"), { code: "ENOENT" });
+  await assert.rejects(readFile(temporaryPath, "utf8"), { code: "ENOENT" });
 });
