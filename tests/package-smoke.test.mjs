@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   readdir,
   rm,
   symlink,
@@ -16,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { createSmokeProject } from "../tooling/create-smoke-project.mjs";
 import {
+  assertInstalledRuntimeRoot,
   parsePackageSmokeArgs,
   resolveNpmCli
 } from "../tooling/package-smoke.mjs";
@@ -215,6 +217,73 @@ test("verbose JSON exposes package runtime evidence only when requested", async 
   const normalResult = JSON.parse(normal.stdout);
   assert.equal(normalResult.version, undefined);
   assert.equal(normalResult.runtime, undefined);
+});
+
+test("installed runtime accepts a consumer reached through a linked external ancestor", async (t) => {
+  const parent = await mkdtemp(path.join(tmpdir(), "governance-runtime-alias-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const actualParent = path.join(parent, "actual-parent");
+  const linkedParent = path.join(parent, "linked-parent");
+  const actualConsumer = path.join(actualParent, "consumer project");
+  const actualInstalledRoot = path.join(
+    actualConsumer,
+    "node_modules",
+    "dev-governance-kit"
+  );
+  await mkdir(actualInstalledRoot, { recursive: true });
+  try {
+    await symlink(
+      actualParent,
+      linkedParent,
+      process.platform === "win32" ? "junction" : "dir"
+    );
+  } catch (error) {
+    if (!["EPERM", "EACCES", "ENOTSUP"].includes(error.code)) throw error;
+    t.skip(`当前平台不能创建目录链接：${error.code}`);
+    return;
+  }
+
+  const linkedConsumer = path.join(linkedParent, "consumer project");
+  const canonicalRuntimeRoot = await realpath(actualInstalledRoot);
+  await assertInstalledRuntimeRoot({
+    runtimePackageRoot: canonicalRuntimeRoot,
+    consumerDir: linkedConsumer,
+    sourceRoot: kitRoot
+  });
+});
+
+test("installed runtime compares the source exclusion boundary canonically", async (t) => {
+  const parent = await mkdtemp(path.join(tmpdir(), "governance-runtime-source-alias-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const actualSource = path.join(parent, "actual-source");
+  const linkedSource = path.join(parent, "linked-source");
+  const consumer = path.join(actualSource, "consumer");
+  const installedRoot = path.join(
+    consumer,
+    "node_modules",
+    "dev-governance-kit"
+  );
+  await mkdir(installedRoot, { recursive: true });
+  try {
+    await symlink(
+      actualSource,
+      linkedSource,
+      process.platform === "win32" ? "junction" : "dir"
+    );
+  } catch (error) {
+    if (!["EPERM", "EACCES", "ENOTSUP"].includes(error.code)) throw error;
+    t.skip(`当前平台不能创建目录链接：${error.code}`);
+    return;
+  }
+
+  await assert.rejects(
+    assertInstalledRuntimeRoot({
+      runtimePackageRoot: await realpath(installedRoot),
+      consumerDir: consumer,
+      sourceRoot: linkedSource
+    }),
+    /不能从源码仓库/
+  );
 });
 
 test("an absolute registry tarball is reused with separate verification output", async (t) => {

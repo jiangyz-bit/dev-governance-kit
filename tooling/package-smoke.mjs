@@ -333,6 +333,37 @@ function isPathAtOrInside(parent, target) {
   );
 }
 
+export async function assertInstalledRuntimeRoot({
+  runtimePackageRoot,
+  consumerDir,
+  sourceRoot = kitRoot
+}) {
+  const installedRoot = path.resolve(
+    consumerDir,
+    "node_modules",
+    "dev-governance-kit"
+  );
+  const [
+    canonicalRuntimeRoot,
+    canonicalInstalledRoot,
+    canonicalSourceRoot
+  ] = await Promise.all([
+    realpath(runtimePackageRoot),
+    realpath(installedRoot),
+    realpath(sourceRoot)
+  ]);
+  assert.equal(
+    canonicalRuntimeRoot,
+    canonicalInstalledRoot,
+    "CLI runtime.packageRoot 必须精确指向 consumer 中的安装包"
+  );
+  assert.equal(
+    isPathAtOrInside(canonicalSourceRoot, canonicalRuntimeRoot),
+    false,
+    "CLI 不能从源码仓库读取运行时资源"
+  );
+}
+
 async function normalizeTrustedFileEntry(rootDir, rootRealPath, entry) {
   if (typeof entry !== "string" || entry.length === 0) {
     throw new Error("可信 package.json.files 包含空条目");
@@ -550,21 +581,11 @@ export async function runPackageSmoke(options = {}) {
     assert.equal(secondInit.report?.updated?.length, 0);
     assert.equal(init.version, tarPackageJson.version);
 
-    const installedRoot = path.resolve(
+    await assertInstalledRuntimeRoot({
+      runtimePackageRoot: init.runtime?.packageRoot ?? "",
       consumerDir,
-      "node_modules",
-      "dev-governance-kit"
-    );
-    assert.equal(
-      path.resolve(init.runtime?.packageRoot ?? ""),
-      installedRoot,
-      "CLI runtime.packageRoot 必须精确指向 consumer 中的安装包"
-    );
-    assert.equal(
-      isPathAtOrInside(kitRoot, init.runtime.packageRoot),
-      false,
-      "CLI 不能从源码仓库读取运行时资源"
-    );
+      sourceRoot: kitRoot
+    });
 
     const verification = {
       source: parsed.source,
