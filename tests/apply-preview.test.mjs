@@ -21,6 +21,12 @@ async function createPreview(t, options = {}) {
   return { preview, workspace };
 }
 
+function withoutContentHash(content) {
+  return content
+    .replace(/^<!-- content-hash: [0-9a-f]{64} -->\n/m, "")
+    .replace(/^\/\/ content-hash: [0-9a-f]{64}\n/m, "");
+}
+
 test("classifies all operations without writing", async (t) => {
   const { preview } = await createPreview(t);
   assert.ok(preview.report.created.length > 0);
@@ -163,4 +169,85 @@ test("reports a stable interruption without writing", async (t) => {
     readFile(preview.operations[0].operation.targetPath, "utf8"),
     (error) => error.code === "ENOENT"
   );
+});
+
+test("migrates legacy Markdown and script headers only when bodies match", async (t) => {
+  for (const extension of [".md", ".mjs"]) {
+    const { preview, workspace } = await createPreview(t);
+    const item = preview.operations.find(({ operation }) => (
+      path.extname(operation.targetPath) === extension
+      && operation.content.includes("content-hash:")
+    ));
+    assert.ok(item, `缺少 ${extension} managed operation`);
+    const legacyContent = withoutContentHash(item.operation.content);
+    assert.doesNotMatch(legacyContent, /content-hash:/);
+    await mkdir(path.dirname(item.operation.targetPath), { recursive: true });
+    await writeFile(item.operation.targetPath, legacyContent, "utf8");
+
+    const migration = await createApplyPreview({
+      context: preview.context
+    });
+    const migrationItem = migration.operations.find(({ operation }) => (
+      operation.targetPath === item.operation.targetPath
+    ));
+    assert.equal(migrationItem.classification.category, "updated");
+    assert.equal(migrationItem.classification.entry.code, "UPDATE");
+
+    await executeApplyPreview(migration, { allowConflicts: false });
+    assert.match(
+      await readFile(item.operation.targetPath, "utf8"),
+      /content-hash:\s*[0-9a-f]{64}/
+    );
+    assert.equal(path.dirname(item.operation.targetPath).startsWith(workspace), true);
+  }
+});
+
+test("legacy Markdown and script body edits remain conflicts with zero writes", async (t) => {
+  for (const extension of [".md", ".mjs"]) {
+    const { preview } = await createPreview(t);
+    const item = preview.operations.find(({ operation }) => (
+      path.extname(operation.targetPath) === extension
+      && operation.content.includes("content-hash:")
+    ));
+    assert.ok(item, `缺少 ${extension} managed operation`);
+    const editedLegacyContent = `${withoutContentHash(
+      item.operation.content
+    ).replace(/\n$/, "")}\n用户编辑\n`;
+    await mkdir(path.dirname(item.operation.targetPath), { recursive: true });
+    await writeFile(
+      item.operation.targetPath,
+      editedLegacyContent,
+      "utf8"
+    );
+
+    const conflicted = await createApplyPreview({
+      context: preview.context
+    });
+    const conflictItem = conflicted.operations.find(({ operation }) => (
+      operation.targetPath === item.operation.targetPath
+    ));
+    const untouched = conflicted.operations.find(({ operation, classification }) => (
+      operation.targetPath !== item.operation.targetPath
+      && classification.category === "created"
+    ));
+    assert.equal(conflictItem.classification.category, "conflicts");
+    assert.equal(
+      conflictItem.classification.entry.code,
+      "USER_FILE_CONFLICT"
+    );
+    await assert.rejects(
+      executeApplyPreview(conflicted, { allowConflicts: false }),
+      (error) => error.code === "INIT_CONFLICT"
+    );
+    assert.equal(
+      await readFile(item.operation.targetPath, "utf8"),
+      editedLegacyContent
+    );
+    if (untouched) {
+      await assert.rejects(
+        readFile(untouched.operation.targetPath, "utf8"),
+        (error) => error.code === "ENOENT"
+      );
+    }
+  }
 });

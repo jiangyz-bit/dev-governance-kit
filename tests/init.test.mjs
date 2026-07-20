@@ -116,8 +116,11 @@ function firstWritablePreviewItem(plan) {
   ));
 }
 
-function fileSystemError(code) {
-  return Object.assign(new Error(`注入文件系统错误：${code}`), { code });
+function fileSystemError(code, errorPath) {
+  return Object.assign(
+    new Error(`注入文件系统错误：${code}`),
+    { code, ...(errorPath ? { path: errorPath } : {}) }
+  );
 }
 
 async function createKitCopy(t) {
@@ -363,7 +366,10 @@ test("normalizes expected planning filesystem errors without swallowing programm
       workspaceDir,
       kitRoot,
       [hook]: async () => {
-        throw fileSystemError(code);
+        throw fileSystemError(
+          code,
+          path.join(workspaceDir, `injected-${code.toLowerCase()}`)
+        );
       }
     });
 
@@ -393,6 +399,84 @@ test("normalizes expected planning filesystem errors without swallowing programm
       }
     }),
     (error) => error instanceof TypeError
+  );
+});
+
+test("does not turn missing kit installation resources into workspace conflicts", async (t) => {
+  const absentWorkspace = await createSupportedWorkspace(t);
+  const existingWorkspace = await createSupportedWorkspace(t, {
+    manifest: true
+  });
+  const missingKitRoot = path.join(
+    await mkdtemp(path.join(tmpdir(), "missing-governance-kit-parent-")),
+    "not-installed"
+  );
+  t.after(() => rm(path.dirname(missingKitRoot), {
+    recursive: true,
+    force: true
+  }));
+
+  for (const workspaceDir of [absentWorkspace, existingWorkspace]) {
+    await assert.rejects(
+      planInitialization({
+        workspaceDir,
+        kitRoot: missingKitRoot
+      }),
+      (error) => (
+        error.code === "ENOENT"
+        && path.resolve(error.path).startsWith(path.resolve(missingKitRoot))
+      )
+    );
+  }
+});
+
+test("does not turn missing packaged profiles, blueprints, or templates into conflicts", async (t) => {
+  const workspaceDir = await createSupportedWorkspace(t);
+  for (const relativeDirectory of [
+    "profiles",
+    "blueprints",
+    path.join("templates", "shared")
+  ]) {
+    const copiedKitRoot = await createKitCopy(t);
+    const missingDirectory = path.join(
+      copiedKitRoot,
+      relativeDirectory
+    );
+    await rm(missingDirectory, { recursive: true });
+
+    await assert.rejects(
+      planInitialization({
+        workspaceDir,
+        kitRoot: copiedKitRoot
+      }),
+      (error) => (
+        error.code === "ENOENT"
+        && path.resolve(error.path) === path.resolve(missingDirectory)
+      )
+    );
+  }
+});
+
+test("does not turn packaged resource EACCES into a workspace conflict", async (t) => {
+  const workspaceDir = await createSupportedWorkspace(t);
+  const copiedKitRoot = await createKitCopy(t);
+  const protectedResource = path.join(
+    copiedKitRoot,
+    "profiles",
+    "java-springboot-mybatis",
+    "profile.yaml"
+  );
+  const injected = fileSystemError("EACCES", protectedResource);
+
+  await assert.rejects(
+    planInitialization({
+      workspaceDir,
+      kitRoot: copiedKitRoot,
+      createContext: async () => {
+        throw injected;
+      }
+    }),
+    (error) => error === injected
   );
 });
 
@@ -854,6 +938,57 @@ test("execution preflight receives the same signal and interrupts before writing
   assert.equal(result.code, "INTERRUPTED");
   assert.deepEqual(result.written, []);
   assert.deepEqual(await snapshotWorkspace(workspaceDir), before);
+});
+
+test("execution rethrows programming errors instead of converting them to business results", async (t) => {
+  const preflightWorkspace = await createSupportedWorkspace(t);
+  const preflightPlan = await planInitialization({
+    workspaceDir: preflightWorkspace,
+    kitRoot
+  });
+  const before = await snapshotWorkspace(preflightWorkspace);
+  await assert.rejects(
+    executeInitialization(preflightPlan, {
+      preflightTargets: async () => {
+        throw new TypeError("注入执行预检编程错误");
+      }
+    }),
+    (error) => error instanceof TypeError
+  );
+  assert.deepEqual(await snapshotWorkspace(preflightWorkspace), before);
+
+  const validateWorkspaceDir = await createSupportedWorkspace(t);
+  const validatePlan = await planInitialization({
+    workspaceDir: validateWorkspaceDir,
+    kitRoot
+  });
+  await assert.rejects(
+    executeInitialization(validatePlan, {
+      validate: async () => {
+        throw new TypeError("注入验证编程错误");
+      }
+    }),
+    (error) => error instanceof TypeError
+  );
+});
+
+test("execution rethrows missing kit resources discovered during validation", async (t) => {
+  const workspaceDir = await createSupportedWorkspace(t);
+  const copiedKitRoot = await createKitCopy(t);
+  const plan = await planInitialization({
+    workspaceDir,
+    kitRoot: copiedKitRoot
+  });
+  const missingDirectory = path.join(copiedKitRoot, "templates", "shared");
+  await rm(missingDirectory, { recursive: true });
+
+  await assert.rejects(
+    executeInitialization(plan),
+    (error) => (
+      error.code === "ENOENT"
+      && path.resolve(error.path) === path.resolve(missingDirectory)
+    )
+  );
 });
 
 test("executeInitialization uses the supplied preview and never replans through apply", async (t) => {

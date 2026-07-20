@@ -54,6 +54,14 @@ const expectedPrewriteFileSystemCodes = new Set([
   "EROFS"
 ]);
 
+const kitResourceDirectories = [
+  "blueprints",
+  "core",
+  "profiles",
+  "schemas",
+  "templates"
+];
+
 function interruptedError(message = "用户中断初始化") {
   return new GovernanceError("INTERRUPTED", message);
 }
@@ -78,13 +86,33 @@ function stableError(error, fallbackCode = "INIT_FAILED") {
   };
 }
 
-function isExpectedPrewriteError(error) {
-  return error instanceof GovernanceError
-    || expectedPrewriteFileSystemCodes.has(error?.code);
+function isPathInside(rootDir, targetPath) {
+  if (typeof targetPath !== "string") return false;
+  const relative = path.relative(
+    path.resolve(rootDir),
+    path.resolve(targetPath)
+  );
+  return relative === ""
+    || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function isManifestInputError(error) {
-  return isExpectedPrewriteError(error)
+function isKitResourceFileSystemError(error, kitRoot) {
+  if (!expectedPrewriteFileSystemCodes.has(error?.code)) return false;
+  return kitResourceDirectories.some((directory) => (
+    isPathInside(path.join(kitRoot, directory), error.path)
+  ));
+}
+
+function isExpectedWorkspaceError(error, workspaceDir) {
+  return error instanceof GovernanceError
+    || (
+      expectedPrewriteFileSystemCodes.has(error?.code)
+      && isPathInside(workspaceDir, error.path)
+    );
+}
+
+function isManifestInputError(error, workspaceDir) {
+  return isExpectedWorkspaceError(error, workspaceDir)
     || /^YAML/i.test(error?.name ?? "");
 }
 
@@ -399,7 +427,7 @@ async function finalizePlan(plan, {
     await preflightInitTargets({ plan, preflightTargets, signal });
   } catch (error) {
     if (isInterrupted(error, signal)) throw error;
-    if (!isExpectedPrewriteError(error)) throw error;
+    if (!isExpectedWorkspaceError(error, plan.workspaceDir)) throw error;
     return prewriteConflictResult(plan, normalizeExecutionError(error, signal));
   }
   return plan;
@@ -439,7 +467,7 @@ async function planInitializationUnsafe({
     throwIfAborted(signal);
   } catch (error) {
     if (isInterrupted(error, signal)) throw error;
-    if (!isExpectedPrewriteError(error)) throw error;
+    if (!isExpectedWorkspaceError(error, resolvedWorkspace)) throw error;
     return planningConflictResult(
       resolvedWorkspace,
       normalizeExecutionError(error, signal)
@@ -460,7 +488,8 @@ async function planInitializationUnsafe({
       throwIfAborted(signal);
     } catch (error) {
       if (isInterrupted(error, signal)) throw error;
-      if (!isManifestInputError(error)) throw error;
+      if (isKitResourceFileSystemError(error, resolvedKitRoot)) throw error;
+      if (!isManifestInputError(error, resolvedWorkspace)) throw error;
       return invalidManifestResult(
         resolvedWorkspace,
         normalizeManifestError(error)
@@ -572,7 +601,9 @@ export async function planInitialization(options) {
     if (isInterrupted(error, options?.signal)) {
       return interruptedResultForPlanning(options.workspaceDir);
     }
-    if (isExpectedPrewriteError(error)) {
+    const kitRoot = path.resolve(options?.kitRoot ?? defaultKitRoot);
+    if (isKitResourceFileSystemError(error, kitRoot)) throw error;
+    if (isExpectedWorkspaceError(error, options.workspaceDir)) {
       return planningConflictResult(
         options.workspaceDir,
         normalizeExecutionError(error, options?.signal)
@@ -791,6 +822,15 @@ export async function executeInitialization(plan, {
       ? appliedResult(plan, validation, written)
       : failedValidationResult(plan, validation, written);
   } catch (error) {
+    if (
+      !isInterrupted(error, signal)
+      && (
+        isKitResourceFileSystemError(error, plan.kitRoot)
+        || !isExpectedWorkspaceError(error, plan.workspaceDir)
+      )
+    ) {
+      throw error;
+    }
     appendWritten(written, error?.details?.written);
     if (writePhaseStarted) {
       await appendCommittedWrites(plan, written);
