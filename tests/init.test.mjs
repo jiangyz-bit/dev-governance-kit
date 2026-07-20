@@ -10,6 +10,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { stringify } from "yaml";
@@ -22,6 +23,11 @@ import { executeApplyPreview } from "../tooling/lib/apply-preview.mjs";
 import { GovernanceError } from "../tooling/lib/errors.mjs";
 import { writeUtf8Atomic } from "../tooling/lib/files.mjs";
 import { renderInitManifest } from "../tooling/lib/init-manifest.mjs";
+import { formatInitHuman } from "../tooling/lib/init-presenter.mjs";
+import {
+  collectInitAnswers,
+  createPromptSession
+} from "../tooling/lib/init-prompts.mjs";
 import { readProjectManifest } from "../tooling/lib/manifest.mjs";
 import { validateWorkspace } from "../tooling/lib/validate.mjs";
 import { createProjectWorkspace } from "./helpers/project-workspace.mjs";
@@ -1207,4 +1213,309 @@ test("executeInitialization uses the supplied preview and never replans through 
 
   assert.equal(suppliedPreview, plan.applyPreview);
   assert.equal(result.status, "applied");
+});
+
+function noviceResult(status, overrides = {}) {
+  const workspace = path.resolve("C:/demo/新 项目");
+  return {
+    command: "init",
+    workspace,
+    status,
+    ok: status === "planned" || status === "applied",
+    applied: status === "applied",
+    valid: status === "applied",
+    written: [],
+    detected: [{
+      component: "server",
+      profile: "java-springboot-mybatis",
+      path: "apps/server",
+      confidence: "high",
+      evidence: ["pom.xml", "spring-boot", "mybatis"]
+    }],
+    gitStates: [{
+      rootDir: workspace,
+      available: true,
+      dirty: true,
+      warning: null
+    }],
+    report: {
+      created: [{
+        path: path.join(workspace, "apps/server/AGENTS.md"),
+        code: "CREATE_FILE"
+      }],
+      updated: [],
+      unchanged: [],
+      conflicts: [],
+      warnings: [],
+      errors: []
+    },
+    ...overrides
+  };
+}
+
+test("default init output explains the plan without internal terms or absolute paths", () => {
+  const result = noviceResult("planned");
+  const output = formatInitHuman(result, { verbose: false });
+
+  assert.match(output, /找到后端服务/);
+  assert.match(output, /处理业务、数据和接口/);
+  assert.match(output, /准备添加/);
+  assert.match(output, /apps[\\/]server[\\/]AGENTS\.md/);
+  assert.match(output, /不会修改你的业务代码/);
+  assert.match(output, /存在未提交修改.*不会提交、回滚或清理/s);
+  assert.match(output, /下一步/);
+  assert.doesNotMatch(output, /Profile|repositoryMode|contract owner|confidence/);
+  assert.doesNotMatch(output, /java-springboot-mybatis|CREATE_FILE/);
+  assert.doesNotMatch(output, /C:[\\/]/i);
+});
+
+test("verbose init output includes evidence warnings absolute paths and internal codes", () => {
+  const result = noviceResult("planned");
+  result.report.warnings.push({
+    code: "STALE_TEMP_FILE",
+    path: path.join(result.workspace, "apps/server/.AGENTS.md.1.uuid.tmp"),
+    targetPath: path.join(result.workspace, "apps/server/AGENTS.md")
+  });
+
+  const output = formatInitHuman(result, { verbose: true });
+
+  assert.match(output, /java-springboot-mybatis/);
+  assert.match(output, /pom\.xml/);
+  assert.match(output, /STALE_TEMP_FILE/);
+  assert.match(output, /C:[\\/]/i);
+});
+
+test("novice stale temporary warning explains manual inspection without deleting it", () => {
+  const result = noviceResult("planned");
+  result.report.warnings.push({
+    code: "STALE_TEMP_FILE",
+    path: path.join(result.workspace, "apps/server/.AGENTS.md.1.uuid.tmp")
+  });
+
+  const output = formatInitHuman(result);
+
+  assert.match(output, /上次运行可能留下了临时文件/);
+  assert.match(output, /apps[\\/]server[\\/]\.AGENTS/);
+  assert.match(output, /请确认内容后再自行处理/);
+  assert.doesNotMatch(output, /已经删除|已自动删除|STALE_TEMP_FILE|C:[\\/]/i);
+});
+
+for (const [status, phrase] of [
+  ["planned", "还没有修改任何文件"],
+  ["conflict", "没有修改任何文件"],
+  ["needs_input", "需要你确认"],
+  ["cancelled", "已经取消"],
+  ["applied", "项目治理配置已完成"],
+  ["failed_validation", "文件已经写入"],
+  ["partial_failure", "只完成了一部分"],
+  ["interrupted", "操作已中断"]
+]) {
+  test(`novice output gives an actionable explanation for ${status}`, () => {
+    const result = noviceResult(status, {
+      code: "INTERNAL_CODE",
+      applied: ["applied", "failed_validation", "partial_failure"].includes(status),
+      written: status === "partial_failure"
+        ? [path.join(path.resolve("C:/demo/新 项目"), "governance-kit.yaml")]
+        : []
+    });
+    const output = formatInitHuman(result);
+    assert.match(output, new RegExp(phrase));
+    assert.match(output, /下一步/);
+    assert.doesNotMatch(output, /INTERNAL_CODE|C:[\\/]/i);
+  });
+}
+
+function scriptedPrompt(responses) {
+  const calls = [];
+  return {
+    calls,
+    signal: new AbortController().signal,
+    async choose(question) {
+      calls.push({ type: "choose", question });
+      return responses.shift();
+    },
+    async confirm(message) {
+      calls.push({ type: "confirm", message });
+      return /^(?:y|yes)$/i.test(String(responses.shift() ?? "").trim());
+    },
+    close() {}
+  };
+}
+
+test("empty low-risk confirmation defaults to cancelled", async () => {
+  const promptSession = scriptedPrompt([""]);
+  const answers = await collectInitAnswers({
+    plan: {
+      status: "needs_input",
+      questions: [{
+        code: "PROFILE_ASSUMPTION_UNCONFIRMED",
+        component: "server",
+        missing: ["flyway"]
+      }]
+    },
+    promptSession
+  });
+
+  assert.equal(answers.status, "cancelled");
+  assert.deepEqual(answers.answers, {});
+  assert.equal(promptSession.calls.length, 1);
+});
+
+test("groups low-risk confirmations into one novice review page", async () => {
+  const promptSession = scriptedPrompt(["y"]);
+  const answers = await collectInitAnswers({
+    plan: {
+      status: "needs_input",
+      questions: [
+        {
+          code: "PROFILE_ASSUMPTION_UNCONFIRMED",
+          component: "server",
+          missing: ["flyway"]
+        },
+        {
+          code: "ADMIN_ROLE_UNCLEAR",
+          component: "admin",
+          path: "apps/admin"
+        }
+      ]
+    },
+    promptSession
+  });
+
+  assert.equal(answers.status, "answered");
+  assert.equal(answers.pagesUsed, 1);
+  assert.deepEqual(answers.answers, {
+    questions: {
+      "PROFILE_ASSUMPTION_UNCONFIRMED:server": { confirmed: true },
+      "ADMIN_ROLE_UNCLEAR:admin": { confirmed: true }
+    }
+  });
+  assert.equal(promptSession.calls.length, 1);
+  assert.match(promptSession.calls[0].message, /没有检测到数据库升级工具/);
+  assert.match(promptSession.calls[0].message, /管理员使用的后台/);
+  assert.doesNotMatch(promptSession.calls[0].message, /Profile|confidence/);
+});
+
+test("collects a component choice with a plain-language impact explanation", async () => {
+  const promptSession = scriptedPrompt(["2"]);
+  const answers = await collectInitAnswers({
+    plan: {
+      status: "needs_input",
+      questions: [{
+        code: "ADMIN_COMPONENT_UNCLEAR",
+        component: "admin",
+        candidates: [
+          { path: "apps/website", profile: "react-admin" },
+          { path: "apps/console", profile: "react-admin" }
+        ]
+      }]
+    },
+    promptSession
+  });
+
+  assert.equal(answers.status, "answered");
+  assert.deepEqual(answers.answers, {
+    components: { admin: { path: "apps/console" } }
+  });
+  assert.match(promptSession.calls[0].question.message, /管理员使用的后台/);
+  assert.match(promptSession.calls[0].question.message, /只决定治理文件放在哪个目录/);
+  assert.doesNotMatch(promptSession.calls[0].question.message, /Profile|repositoryMode/);
+});
+
+test("explains repository layout choices without requiring Git terminology knowledge", async () => {
+  const promptSession = scriptedPrompt(["1"]);
+  const answers = await collectInitAnswers({
+    plan: {
+      status: "needs_input",
+      questions: [{
+        code: "REPOSITORY_MODE_UNCLEAR",
+        reason: "HYBRID_GIT_BOUNDARIES"
+      }]
+    },
+    promptSession
+  });
+
+  assert.equal(answers.status, "answered");
+  assert.deepEqual(answers.answers, { repositoryMode: "monorepo" });
+  assert.match(promptSession.calls[0].question.message, /代码.*怎样保存/);
+  assert.match(
+    promptSession.calls[0].question.options[0].impact,
+    /同一个 Git 仓库管理/
+  );
+  assert.doesNotMatch(
+    promptSession.calls[0].question.message,
+    /repositoryMode|monorepo|multi-repo|HYBRID/
+  );
+});
+
+test("does not guess when more than three prompt pages would be required", async () => {
+  const promptSession = scriptedPrompt(["1", "1", "1", "1"]);
+  const questions = ["server", "admin", "client", "server"].map((component, index) => ({
+    code: `${component.toUpperCase()}_COMPONENT_UNCLEAR`,
+    component,
+    candidates: [
+      { path: `apps/${component}-${index}-a`, profile: "test" },
+      { path: `apps/${component}-${index}-b`, profile: "test" }
+    ]
+  }));
+
+  const result = await collectInitAnswers({
+    plan: { status: "needs_input", questions },
+    promptSession
+  });
+
+  assert.equal(result.status, "needs_input");
+  assert.equal(result.pagesUsed, 0);
+  assert.deepEqual(result.answers, {});
+  assert.equal(promptSession.calls.length, 0);
+});
+
+test("prompt session maps EOF to INPUT_EOF and always supports close", async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const session = createPromptSession({ input, output });
+  input.end();
+
+  await assert.rejects(
+    session.confirm(),
+    (error) => error.code === "INPUT_EOF"
+  );
+  session.close();
+  session.close();
+});
+
+test("prompt session maps external abort to INTERRUPTED", async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const controller = new AbortController();
+  const session = createPromptSession({
+    input,
+    output,
+    signal: controller.signal
+  });
+  const pending = session.confirm();
+  controller.abort();
+
+  await assert.rejects(
+    pending,
+    (error) => error.code === "INTERRUPTED"
+  );
+  session.close();
+});
+
+test("prompt session maps Ctrl+C to INTERRUPTED", async () => {
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const output = new PassThrough();
+  output.isTTY = true;
+  const session = createPromptSession({ input, output });
+  const pending = session.confirm();
+  input.write("\u0003");
+
+  await assert.rejects(
+    pending,
+    (error) => error.code === "INTERRUPTED"
+  );
+  session.close();
 });
