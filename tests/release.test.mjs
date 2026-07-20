@@ -385,3 +385,29 @@ test("release failure diagnostics redact credentials paths and controls", () => 
   assert.doesNotMatch(output, /[\u0000-\u001f\u007f-\u009f]/);
   assert.ok(Buffer.byteLength(output, "utf8") <= 904);
 });
+
+test("release diagnostics redact standalone npm credentials at safe boundaries", () => {
+  const shortToken = "npm_Q7z";
+  const longToken = `npm_${"Ab9-_".repeat(30)}`;
+  const embeddedToken = "npm_KEEP";
+  const source = [
+    "npm registry 查询失败：request rejected credential",
+    shortToken,
+    `(${longToken})`,
+    `first=${shortToken}, second:${longToken};`,
+    "普通词 npm registry npm-package npmjs 保留",
+    `embedded${embeddedToken}suffix`
+  ].join(" ");
+  const output = sanitizeReleaseFailure(source);
+
+  assert.match(output, /^npm registry 查询失败：request rejected credential/);
+  assert.doesNotMatch(output, new RegExp(shortToken, "g"));
+  assert.doesNotMatch(output, new RegExp(longToken, "g"));
+  assert.equal(
+    output.match(/<npm凭据已隐藏>/g)?.length,
+    4,
+    "独立出现的多个 npm_ 凭据都必须遮蔽"
+  );
+  assert.match(output, /普通词 npm registry npm-package npmjs 保留/);
+  assert.match(output, new RegExp(`embedded${embeddedToken}suffix`));
+});

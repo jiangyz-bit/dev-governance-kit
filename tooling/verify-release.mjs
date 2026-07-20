@@ -359,9 +359,13 @@ function redactCredentials(source) {
     /(\bnpm_[A-Za-z0-9_.:/-]+\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}\]]+)/gi,
     "$1<凭据已隐藏>"
   );
-  return output.replace(
+  output = output.replace(
     /(["']?(?:_authToken|_auth|password|token|secret|apiKey)["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}\]]+)/gi,
     "$1<凭据已隐藏>"
+  );
+  return output.replace(
+    /(^|[^A-Za-z0-9_-])npm_[A-Za-z0-9_-]+(?![A-Za-z0-9_-])/gi,
+    "$1<npm凭据已隐藏>"
   );
 }
 
