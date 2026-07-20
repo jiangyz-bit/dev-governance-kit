@@ -104,6 +104,73 @@ test("rejects a linked file inside workspace", async (t) => {
   );
 });
 
+test("allows a workspace reached through a linked external ancestor", async (t) => {
+  const parentDir = await makeWorkspace(t);
+  const actualParent = path.join(parentDir, "actual-parent");
+  const linkedParent = path.join(parentDir, "linked-parent");
+  const actualWorkspace = path.join(actualParent, "workspace");
+  await mkdir(actualWorkspace, { recursive: true });
+  if (!await createLink(
+    t,
+    actualParent,
+    linkedParent,
+    process.platform === "win32" ? "junction" : "dir"
+  )) return;
+
+  const workspaceDir = path.join(linkedParent, "workspace");
+  const target = path.join(workspaceDir, "created.txt");
+  await preflightWritableTargets([target], { rootDir: workspaceDir });
+  await writeUtf8Atomic(target, "safe", { rootDir: workspaceDir });
+
+  assert.equal(await readFile(path.join(actualWorkspace, "created.txt"), "utf8"), "safe");
+});
+
+test("preflight rejects when its scope root is itself a link", async (t) => {
+  const parentDir = await makeWorkspace(t);
+  const actualRoot = path.join(parentDir, "actual-root");
+  const linkedRoot = path.join(parentDir, "linked-root");
+  await mkdir(actualRoot);
+  if (!await createLink(
+    t,
+    actualRoot,
+    linkedRoot,
+    process.platform === "win32" ? "junction" : "dir"
+  )) return;
+
+  await assert.rejects(
+    preflightWritableTargets(
+      [path.join(linkedRoot, "created.txt")],
+      { rootDir: linkedRoot }
+    ),
+    (error) =>
+      error.code === "TARGET_NOT_WRITABLE"
+      && error.details?.cause === "UNSAFE_REAL_PATH"
+  );
+});
+
+test("preflight rejects a link inside its scope", async (t) => {
+  const workspaceDir = await makeWorkspace(t);
+  const actualDir = path.join(workspaceDir, "actual");
+  const linkedDir = path.join(workspaceDir, "linked");
+  await mkdir(actualDir);
+  if (!await createLink(
+    t,
+    actualDir,
+    linkedDir,
+    process.platform === "win32" ? "junction" : "dir"
+  )) return;
+
+  await assert.rejects(
+    preflightWritableTargets(
+      [path.join(linkedDir, "created.txt")],
+      { rootDir: workspaceDir }
+    ),
+    (error) =>
+      error.code === "TARGET_NOT_WRITABLE"
+      && error.details?.cause === "UNSAFE_REAL_PATH"
+  );
+});
+
 test("detects a target changed after preview", async (t) => {
   const workspaceDir = await makeWorkspace(t);
   const target = path.join(workspaceDir, "target.txt");
@@ -208,7 +275,10 @@ test("preflights every target parent before any write", async (t) => {
   await writeFile(blockedParent, "not a directory", "utf8");
 
   await assert.rejects(
-    preflightWritableTargets([writableTarget, deniedTarget]),
+    preflightWritableTargets(
+      [writableTarget, deniedTarget],
+      { rootDir: workspaceDir }
+    ),
     (error) => error.code === "TARGET_NOT_WRITABLE"
   );
   await assert.rejects(access(path.dirname(writableTarget)));
@@ -221,7 +291,7 @@ test("preflight writable targets stops at an aborted signal", async (t) => {
   const signal = AbortSignal.abort();
 
   await assert.rejects(
-    preflightWritableTargets([target], { signal }),
+    preflightWritableTargets([target], { rootDir: workspaceDir, signal }),
     (error) => error.name === "AbortError"
   );
   await assert.rejects(readFile(target, "utf8"), { code: "ENOENT" });
@@ -234,7 +304,10 @@ test("preflight preserves an abort that arrives during a target check", async (t
   queueMicrotask(() => controller.abort());
 
   await assert.rejects(
-    preflightWritableTargets([target], { signal: controller.signal }),
+    preflightWritableTargets(
+      [target],
+      { rootDir: workspaceDir, signal: controller.signal }
+    ),
     (error) => error.name === "AbortError"
   );
   await assert.rejects(readFile(target, "utf8"), { code: "ENOENT" });
@@ -246,7 +319,10 @@ test("writes atomically only when the preview snapshot remains current", async (
   await writeFile(target, "before", "utf8");
   const snapshot = await snapshotPath(target);
 
-  await writeUtf8Atomic(target, "after", { expectedSnapshot: snapshot });
+  await writeUtf8Atomic(target, "after", {
+    expectedSnapshot: snapshot,
+    rootDir: workspaceDir
+  });
 
   assert.equal(await readFile(target, "utf8"), "after");
 });
@@ -258,7 +334,10 @@ test("does not overwrite a target that appeared after preview", async (t) => {
   await writeFile(target, "other process", "utf8");
 
   await assert.rejects(
-    writeUtf8Atomic(target, "ours", { expectedSnapshot: snapshot }),
+    writeUtf8Atomic(target, "ours", {
+      expectedSnapshot: snapshot,
+      rootDir: workspaceDir
+    }),
     (error) => error.code === "TARGET_CHANGED_AFTER_PREVIEW"
   );
   assert.equal(await readFile(target, "utf8"), "other process");
@@ -270,7 +349,7 @@ test("stops before writing when the signal is already aborted", async (t) => {
   const signal = AbortSignal.abort();
 
   await assert.rejects(
-    writeUtf8Atomic(target, "content", { signal }),
+    writeUtf8Atomic(target, "content", { rootDir: workspaceDir, signal }),
     (error) => error.name === "AbortError"
   );
   await assert.rejects(readFile(target, "utf8"), { code: "ENOENT" });
@@ -296,7 +375,10 @@ test("reports stale UUID temporary files without deleting or trusting them", asy
   }]);
 
   const snapshot = await snapshotPath(target);
-  await writeUtf8Atomic(target, "after", { expectedSnapshot: snapshot });
+  await writeUtf8Atomic(target, "after", {
+    expectedSnapshot: snapshot,
+    rootDir: workspaceDir
+  });
 
   assert.equal(await readFile(target, "utf8"), "after");
   assert.equal(await readFile(staleTemporary, "utf8"), "untrusted stale content");
@@ -317,6 +399,7 @@ test("rejects a regular target changed to a link after preview and cleans its te
   await assert.rejects(
     writeUtf8Atomic(target, "after", {
       expectedSnapshot: snapshot,
+      rootDir: workspaceDir,
       fsOperations: {
         open: async (...args) => {
           temporaryPath = args[0];
@@ -343,6 +426,7 @@ test("does not delete a preoccupied temporary path", async (t) => {
 
   await assert.rejects(
     writeUtf8Atomic(target, "ours", {
+      rootDir: workspaceDir,
       fsOperations: {
         open: async (...args) => {
           temporaryPath = args[0];
@@ -368,6 +452,7 @@ test("cleans its temporary file when atomic rename fails", async (t) => {
   await assert.rejects(
     writeUtf8Atomic(target, "after", {
       expectedSnapshot: snapshot,
+      rootDir: workspaceDir,
       fsOperations: {
         open: async (...args) => {
           temporaryPath = args[0];
@@ -397,6 +482,7 @@ test("cleans its temporary file when Windows rename-over-existing fails", {
   await assert.rejects(
     writeUtf8Atomic(target, "after", {
       expectedSnapshot: snapshot,
+      rootDir: workspaceDir,
       fsOperations: {
         open: async (...args) => {
           temporaryPath = args[0];
@@ -421,6 +507,7 @@ test("stops at the next checkpoint when aborted during execution", async (t) => 
 
   await assert.rejects(
     writeUtf8Atomic(target, "content", {
+      rootDir: workspaceDir,
       signal: controller.signal,
       fsOperations: {
         open: async (...args) => {

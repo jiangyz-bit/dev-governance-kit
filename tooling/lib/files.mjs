@@ -28,27 +28,6 @@ function unsafeRealPath(root, target, message) {
   return new GovernanceError("UNSAFE_REAL_PATH", message, { root, target });
 }
 
-async function assertNoLinkedPathSegments(targetPath) {
-  const target = path.resolve(targetPath);
-  const parsed = path.parse(target);
-  const parts = target.slice(parsed.root.length).split(path.sep).filter(Boolean);
-  let current = parsed.root;
-
-  for (const part of parts) {
-    current = path.join(current, part);
-    try {
-      const info = await lstat(current);
-      if (info.isSymbolicLink()) {
-        throw unsafeRealPath(parsed.root, current, `路径包含符号链接：${current}`);
-      }
-    } catch (error) {
-      if (error.code === "ENOENT") break;
-      throw error;
-    }
-  }
-  return target;
-}
-
 function sameIdentity(left, right) {
   return left.dev === right.dev && left.ino === right.ino;
 }
@@ -206,14 +185,21 @@ export async function assertSnapshotUnchanged(expected) {
   }
 }
 
-export async function preflightWritableTargets(targetPaths, { signal } = {}) {
+export async function preflightWritableTargets(targetPaths, {
+  rootDir,
+  signal
+} = {}) {
   throwIfAborted(signal);
+  if (typeof rootDir !== "string" || rootDir.length === 0) {
+    throw new TypeError("preflightWritableTargets 需要 rootDir");
+  }
+  const scopeRoot = path.resolve(rootDir);
   const targets = [...new Set(targetPaths.map((target) => path.resolve(target)))];
   const prepared = [];
   for (const target of targets) {
     throwIfAborted(signal);
     try {
-      await assertNoLinkedPathSegments(target);
+      await assertRealPathInside(scopeRoot, target, { allowMissing: true });
       throwIfAborted(signal);
       const { parent, info } = await nearestExistingParent(target);
       throwIfAborted(signal);
@@ -275,22 +261,28 @@ export function detectStaleTempFiles(targetPaths, observedPaths) {
 
 export async function writeUtf8Atomic(filePath, content, {
   expectedSnapshot,
+  rootDir,
   signal,
   fsOperations = {}
 } = {}) {
   const openTemporary = fsOperations.open ?? open;
   const renameTarget = fsOperations.rename ?? rename;
   throwIfAborted(signal);
+  if (typeof rootDir !== "string" || rootDir.length === 0) {
+    throw new TypeError("writeUtf8Atomic 需要 rootDir");
+  }
+  const scopeRoot = path.resolve(rootDir);
   const targetPath = path.resolve(filePath);
+  await assertRealPathInside(scopeRoot, targetPath, { allowMissing: true });
   const expected = expectedSnapshot ?? await snapshotPath(targetPath);
-  await preflightWritableTargets([targetPath], { signal });
+  await preflightWritableTargets([targetPath], { rootDir: scopeRoot, signal });
   throwIfAborted(signal);
 
   let temporaryPath;
   let temporaryIdentity;
   try {
     await mkdir(path.dirname(targetPath), { recursive: true });
-    await assertNoLinkedPathSegments(targetPath);
+    await assertRealPathInside(scopeRoot, targetPath, { allowMissing: true });
     throwIfAborted(signal);
 
     temporaryPath = path.join(
@@ -308,7 +300,7 @@ export async function writeUtf8Atomic(filePath, content, {
     }
 
     throwIfAborted(signal);
-    await assertNoLinkedPathSegments(targetPath);
+    await assertRealPathInside(scopeRoot, targetPath, { allowMissing: true });
     await assertSnapshotUnchanged(expected);
     throwIfAborted(signal);
 

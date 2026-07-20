@@ -35,7 +35,8 @@ test("package exposes the governance CLI and supported Node version", async () =
   assert.equal(pkg.type, "module");
   assert.equal(pkg.bin["governance-kit"], "tooling/cli.mjs");
   assert.equal(pkg.engines.node, ">=20.3.0");
-  assert.equal(pkg.scripts.test, "node --test tests/*.test.mjs");
+  assert.equal(pkg.scripts.test, "node --test");
+  assert.equal(pkg.scripts["test:unit"], "node --test");
 });
 
 test("package metadata is ready for the public npm registry", async () => {

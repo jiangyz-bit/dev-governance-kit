@@ -433,7 +433,10 @@ async function preflightInitTargets({
   for (const _target of plan.writableTargets) {
     throwIfAborted(signal);
   }
-  await preflightTargets(plan.writableTargets, { signal });
+  await preflightTargets(plan.writableTargets, {
+    rootDir: plan.workspaceDir,
+    signal
+  });
   throwIfAborted(signal);
 }
 
@@ -836,7 +839,10 @@ export async function executeInitialization(plan, {
   let validationError = false;
   try {
     throwIfAborted(signal);
-    await preflightTargets(plan.writableTargets, { signal });
+    await preflightTargets(plan.writableTargets, {
+      rootDir: plan.workspaceDir,
+      signal
+    });
     throwIfAborted(signal);
     await assertRealPathInside(
       plan.workspaceDir,

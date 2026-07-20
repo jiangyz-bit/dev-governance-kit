@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { applyGovernance } from "./lib/apply.mjs";
@@ -392,9 +392,17 @@ export function exitCodeFor(result) {
   return 1;
 }
 
-function isDirectExecution() {
+async function isDirectExecution() {
   if (!process.argv[1]) return false;
-  return path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+  try {
+    const [entryPath, modulePath] = await Promise.all([
+      realpath(process.argv[1]),
+      realpath(fileURLToPath(import.meta.url))
+    ]);
+    return entryPath === modulePath;
+  } catch {
+    return false;
+  }
 }
 
 export async function main(
@@ -473,6 +481,6 @@ export async function main(
   }
 }
 
-if (isDirectExecution()) {
+if (await isDirectExecution()) {
   process.exitCode = await main();
 }

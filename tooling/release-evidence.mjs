@@ -6,11 +6,11 @@ import {
   link,
   open,
   readFile,
-  realpath,
   unlink
 } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertRealPathInside } from "./lib/files.mjs";
 import { readTarballEntries } from "./package-smoke.mjs";
 
 const kitRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -172,10 +172,12 @@ function assertFiles(files, label) {
 
 async function assertUnlinkedPath(target, {
   label,
+  rootDir,
   type = "file",
   allowMissing = false
 }) {
   const resolved = path.resolve(target);
+  await assertRealPathInside(rootDir, resolved, { allowMissing });
   let info;
   try {
     info = await lstat(resolved);
@@ -189,10 +191,6 @@ async function assertUnlinkedPath(target, {
   }
   if (type === "directory" && !info.isDirectory()) {
     throw new Error(`${label} 必须是目录`);
-  }
-  const actual = await realpath(resolved);
-  if (path.resolve(actual) !== resolved) {
-    throw new Error(`${label} 的路径不能经过链接`);
   }
   return resolved;
 }
@@ -303,14 +301,17 @@ export async function createReleaseEvidence({
   assertCommit(commit);
   const releaseDirectory = await assertUnlinkedPath(directory, {
     label: "directory",
+    rootDir: directory,
     type: "directory"
   });
   const packJsonPath = await assertUnlinkedPath(packJson, {
     label: "pack JSON",
+    rootDir: releaseDirectory,
     type: "file"
   });
   const outputPath = await assertUnlinkedPath(output, {
     label: "output",
+    rootDir: releaseDirectory,
     allowMissing: true
   });
   if (
@@ -324,7 +325,7 @@ export async function createReleaseEvidence({
   );
   const tarballPath = await assertUnlinkedPath(
     path.join(releaseDirectory, metadata.filename),
-    { label: "tarball", type: "file" }
+    { label: "tarball", rootDir: releaseDirectory, type: "file" }
   );
   if (path.dirname(tarballPath) !== releaseDirectory) {
     throw new Error("tarball 必须直接位于 directory 中");
@@ -372,12 +373,23 @@ export async function verifyReleaseEvidence({
 }) {
   assertCommit(expectedCommit, "expected commit");
   assertVersion(expectedVersion, "expected version");
+  const candidateDirectory = path.dirname(path.resolve(evidence));
+  await assertUnlinkedPath(candidateDirectory, {
+    label: "候选目录",
+    rootDir: candidateDirectory,
+    type: "directory"
+  });
   const evidencePath = await assertUnlinkedPath(evidence, {
     label: "evidence",
+    rootDir: candidateDirectory,
     type: "file"
   });
+  if (path.dirname(path.resolve(tarball)) !== candidateDirectory) {
+    throw new Error("evidence 和 tarball 必须位于同一候选目录");
+  }
   const tarballPath = await assertUnlinkedPath(tarball, {
     label: "tarball",
+    rootDir: candidateDirectory,
     type: "file"
   });
   const value = validateEvidenceSchema(

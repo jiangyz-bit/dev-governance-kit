@@ -315,6 +315,61 @@ test("verify rejects evidence path replacement and tarball basename substitution
   );
 });
 
+test("release evidence allows a candidate reached through a linked external ancestor", async (t) => {
+  const current = await fixture(t);
+  const aliasParent = await mkdtemp(path.join(tmpdir(), "release-evidence-outer-alias-"));
+  t.after(() => rm(aliasParent, { recursive: true, force: true }));
+  const actualParent = path.dirname(current.directory);
+  const linkedParent = path.join(aliasParent, "linked-parent");
+  try {
+    await symlink(
+      actualParent,
+      linkedParent,
+      process.platform === "win32" ? "junction" : "dir"
+    );
+  } catch (error) {
+    if (!["EPERM", "EACCES", "ENOTSUP"].includes(error.code)) throw error;
+    t.skip(`当前平台不能创建目录链接：${error.code}`);
+    return;
+  }
+
+  const candidate = path.join(linkedParent, path.basename(current.directory));
+  const evidence = path.join(candidate, "release-evidence.json");
+  const tarball = path.join(candidate, current.filename);
+  await createReleaseEvidence({
+    commit,
+    packJson: path.join(candidate, "pack.json"),
+    directory: candidate,
+    output: evidence
+  });
+  const verified = await verifyReleaseEvidence({
+    evidence,
+    tarball,
+    expectedCommit: commit,
+    expectedVersion: current.version
+  });
+
+  assert.equal(verified.commit, commit);
+});
+
+test("verify requires evidence and tarball in the same candidate directory", async (t) => {
+  const current = await create(t);
+  const otherDirectory = await mkdtemp(path.join(tmpdir(), "release-evidence-other-"));
+  t.after(() => rm(otherDirectory, { recursive: true, force: true }));
+  const copiedTarball = path.join(otherDirectory, current.filename);
+  await writeFile(copiedTarball, await readFile(current.tarball));
+
+  await assert.rejects(
+    verifyReleaseEvidence({
+      evidence: current.output,
+      tarball: copiedTarball,
+      expectedCommit: commit,
+      expectedVersion: current.version
+    }),
+    /同一候选目录/
+  );
+});
+
 test("create rejects pack metadata that does not match actual ordinary files", async (t) => {
   const current = await fixture(t, {
     packFiles: [{ path: "package.json" }]

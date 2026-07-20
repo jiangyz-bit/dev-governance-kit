@@ -4,6 +4,7 @@ import {
   mkdtemp,
   readFile,
   rm,
+  symlink,
   writeFile
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -62,6 +63,36 @@ function runCli(args) {
     child.on("close", (code) => resolve({ code, stdout, stderr }));
   });
 }
+
+test("CLI executes when launched through a symbolic link", {
+  skip: process.platform === "win32"
+    ? "Windows 测试环境不保证拥有创建真实符号链接的权限"
+    : false
+}, async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "governance-cli-link-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const linkedCli = path.join(directory, "dev-governance-kit.mjs");
+  await symlink(cliPath, linkedCli, "file");
+
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [linkedCli, "--help"], {
+      cwd: kitRoot,
+      windowsHide: true
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stderr, "");
+  assert.match(result.stdout, /governance-kit init/);
+});
 
 async function loadCliModule() {
   return import("../tooling/cli.mjs");
@@ -599,8 +630,8 @@ test("Unix and macOS child SIGINT exits 130", {
   const before = await snapshotCompleteWorkspace(workspace);
   const script = `
     import { pathToFileURL } from "node:url";
-    const cli = await import(pathToFileURL(process.argv[1]));
-    const workspace = process.argv[2];
+    const cli = await import(pathToFileURL(process.argv[2]));
+    const workspace = process.argv[3];
     const code = await cli.main(["init", "--workspace", workspace], {
       input: { isTTY: true },
       output: process.stdout,
@@ -612,7 +643,11 @@ test("Unix and macOS child SIGINT exits 130", {
           async confirm() {
             process.stdout.write("__READY__\\n");
             await new Promise((resolve, reject) => {
+              const timeout = setTimeout(() => {
+                reject(new Error("SIGINT test child timed out"));
+              }, 5000);
               signal.addEventListener("abort", () => {
+                clearTimeout(timeout);
                 const error = new Error("aborted");
                 error.name = "AbortError";
                 reject(error);
@@ -631,12 +666,17 @@ test("Unix and macOS child SIGINT exits 130", {
       "--input-type=module",
       "--eval",
       script,
+      "sigint-harness",
       cliPath,
       workspace
     ], {
       cwd: kitRoot,
       windowsHide: true
     });
+    const watchdog = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("SIGINT test parent timed out"));
+    }, 10000);
     let stdout = "";
     let stderr = "";
     let interrupted = false;
@@ -650,8 +690,14 @@ test("Unix and macOS child SIGINT exits 130", {
       }
     });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", reject);
-    child.on("close", (code) => resolve({ code, stdout, stderr }));
+    child.on("error", (error) => {
+      clearTimeout(watchdog);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(watchdog);
+      resolve({ code, stdout, stderr });
+    });
   });
 
   assert.equal(result.code, 130, result.stderr);

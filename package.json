@@ -45,8 +45,8 @@
   },
   "scripts": {
     "governance-kit": "node tooling/cli.mjs",
-    "test": "node --test tests/*.test.mjs",
-    "test:unit": "node --test tests/*.test.mjs",
+    "test": "node --test",
+    "test:unit": "node --test",
     "test:package": "node --test tests/package-smoke.test.mjs",
     "verify:release": "node tooling/verify-release.mjs"
   },
