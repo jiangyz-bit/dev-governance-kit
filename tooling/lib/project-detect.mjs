@@ -111,7 +111,13 @@ async function inspectMarkers({ rootDir, workspaceDir, signal, warnings }) {
     throwIfAborted(signal);
     if (!markers[marker].exists) continue;
     try {
-      markers[marker].json = JSON.parse(markers[marker].source);
+      const parsed = JSON.parse(markers[marker].source);
+      if (marker === "package.json" && (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))) {
+        warnings.push({ code: "INVALID_PACKAGE_JSON", path: relativePath(workspaceDir ?? rootDir, path.join(rootDir, marker)) });
+        markers[marker].invalid = true;
+        continue;
+      }
+      markers[marker].json = parsed;
     } catch {
       const code = marker === "package.json"
         ? "INVALID_PACKAGE_JSON"
@@ -125,7 +131,7 @@ async function inspectMarkers({ rootDir, workspaceDir, signal, warnings }) {
   return markers;
 }
 
-function evaluateProfile(profile, rootDir, markers, signal) {
+function evaluateProfile(profile, rootDir, markers, signal, componentPath) {
   throwIfAborted(signal);
   const rule = profileRules[profile];
   const found = new Set();
@@ -146,7 +152,7 @@ function evaluateProfile(profile, rootDir, markers, signal) {
       if (hasVite(packageJson.json, signal)) found.add("vite");
     }
     if (markers["tsconfig.json"].exists) found.add("tsconfig.json");
-    if (/(^|[-_/])(admin|console|dashboard)([-_/]|$)/i.test(normalizeRelativePath(rootDir))) {
+    if (/(^|[-_/])(admin|console|dashboard)([-_/]|$)/i.test(componentPath)) {
       found.add("admin-role");
     }
   }
@@ -173,7 +179,13 @@ async function detectComponentAtPath({ component, profile, rootDir, workspaceDir
   }
   const markers = await inspectMarkers({ rootDir, workspaceDir, signal, warnings });
   throwIfAborted(signal);
-  const evaluation = evaluateProfile(profile, rootDir, markers, signal);
+  const evaluation = evaluateProfile(
+    profile,
+    rootDir,
+    markers,
+    signal,
+    relativePath(workspaceDir ?? rootDir, rootDir)
+  );
   return {
     compatible: evaluation.missing.length === 0,
     found: evaluation.found,
@@ -232,6 +244,11 @@ function sortWarnings(warnings) {
   ));
 }
 
+function normalizeWarning(warning, workspaceDir) {
+  if (!warning.path || typeof warning.path !== "string") return warning;
+  return { ...warning, path: relativePath(workspaceDir, warning.path) };
+}
+
 function inferProjectName(workspaceDir) {
   return path.basename(path.resolve(workspaceDir));
 }
@@ -241,8 +258,13 @@ export async function detectWorkspace({ workspaceDir, scan, signal }) {
   const rootDir = path.resolve(workspaceDir);
   const candidates = [];
   const questions = [];
-  const warnings = [...scan.warnings];
+  const warnings = [];
   const roots = new Set();
+
+  for (const warning of scan.warnings) {
+    throwIfAborted(signal);
+    warnings.push(normalizeWarning(warning, rootDir));
+  }
 
   for (const entry of scan.entries) {
     throwIfAborted(signal);
@@ -260,7 +282,13 @@ export async function detectWorkspace({ workspaceDir, scan, signal }) {
     throwIfAborted(signal);
     for (const [profile, rule] of Object.entries(profileRules)) {
       throwIfAborted(signal);
-      const evaluation = evaluateProfile(profile, componentRoot, markers, signal);
+      const evaluation = evaluateProfile(
+        profile,
+        componentRoot,
+        markers,
+        signal,
+        relativePath(rootDir, componentRoot)
+      );
       let hasAllRequiredEvidence = true;
       for (const marker of evaluation.rule.required) {
         throwIfAborted(signal);
