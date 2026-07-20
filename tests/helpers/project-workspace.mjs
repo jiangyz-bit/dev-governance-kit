@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import {
   lstat,
   mkdir,
@@ -12,7 +13,10 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { isDeepStrictEqual, promisify } from "node:util";
 import { stringify } from "yaml";
+
+const execFileAsync = promisify(execFile);
 
 export async function createProjectWorkspace(t, {
   files = {},
@@ -57,12 +61,8 @@ const componentFiles = {
 };
 
 export async function createDetectedWorkspace(t, mode = "monorepo", options = {}) {
-  const directories = mode === "multi-repo"
-    ? ["server/.git", "admin/.git", "miniprogram/.git"]
-    : [".git"];
-  return createProjectWorkspace(t, {
+  const workspaceDir = await createProjectWorkspace(t, {
     prefix: options.prefix,
-    directories,
     files: {
       ...componentFiles.server,
       ...componentFiles.admin,
@@ -70,6 +70,25 @@ export async function createDetectedWorkspace(t, mode = "monorepo", options = {}
       ...(options.files ?? {})
     }
   });
+  const repositoryRoots = mode === "multi-repo"
+    ? ["server", "admin", "miniprogram"].map((component) => (
+        path.join(workspaceDir, component)
+      ))
+    : [workspaceDir];
+  for (const repositoryRoot of repositoryRoots) {
+    await execFileAsync("git", [
+      "-c", "init.defaultBranch=main",
+      "init", "--quiet", repositoryRoot
+    ], {
+      windowsHide: true,
+      env: {
+        ...process.env,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null"
+      }
+    });
+  }
+  return workspaceDir;
 }
 
 export async function snapshotWorkspace(rootDir, relativeDir = "") {
@@ -85,6 +104,9 @@ export async function snapshotWorkspace(rootDir, relativeDir = "") {
     if (info.isSymbolicLink()) {
       result[portablePath] = {
         type: "link",
+        device: info.dev,
+        inode: info.ino,
+        size: info.size,
         target: await readlink(absolutePath)
       };
     } else if (info.isDirectory()) {
@@ -93,13 +115,52 @@ export async function snapshotWorkspace(rootDir, relativeDir = "") {
     } else if (info.isFile()) {
       result[portablePath] = {
         type: "file",
-        content: await readFile(absolutePath, "utf8")
+        device: info.dev,
+        inode: info.ino,
+        size: info.size,
+        content: await readFile(absolutePath)
       };
     } else {
       result[portablePath] = { type: "other" };
     }
   }
   return result;
+}
+
+export function changedWorkspacePaths(before, after) {
+  return [...new Set([
+    ...Object.keys(before),
+    ...Object.keys(after)
+  ])].filter((relativePath) => (
+    !isDeepStrictEqual(before[relativePath], after[relativePath])
+  )).sort();
+}
+
+export function expectedWorkspaceChanges(before, workspaceDir, written) {
+  const rootDir = path.resolve(workspaceDir);
+  const expected = new Set();
+  for (const targetPath of written) {
+    const relativePath = path.relative(rootDir, path.resolve(targetPath));
+    if (
+      relativePath === ""
+      || relativePath === ".."
+      || relativePath.startsWith(`..${path.sep}`)
+      || path.isAbsolute(relativePath)
+    ) {
+      throw new Error(`写入路径逃逸工作区：${targetPath}`);
+    }
+    const portablePath = relativePath.replaceAll("\\", "/");
+    expected.add(portablePath);
+    const parts = portablePath.split("/");
+    parts.pop();
+    let parent = "";
+    for (const part of parts) {
+      parent = parent ? `${parent}/${part}` : part;
+      const directoryKey = `${parent}/`;
+      if (!(directoryKey in before)) expected.add(directoryKey);
+    }
+  }
+  return [...expected].sort();
 }
 
 export function manifestForLinkedServer(componentPath = "server") {

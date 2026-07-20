@@ -3,7 +3,6 @@ import { spawn } from "node:child_process";
 import {
   mkdtemp,
   readFile,
-  readdir,
   rm,
   writeFile
 } from "node:fs/promises";
@@ -12,6 +11,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { parse } from "yaml";
 import {
   executeInitialization,
   planInitialization
@@ -20,6 +20,8 @@ import {
   createDetectedWorkspace,
   createProjectWorkspace,
   createRealLink,
+  changedWorkspacePaths,
+  expectedWorkspaceChanges,
   manifestForLinkedServer,
   snapshotWorkspace as snapshotCompleteWorkspace
 } from "./helpers/project-workspace.mjs";
@@ -42,25 +44,6 @@ async function createSupportedWorkspace(t, { assumption = true } = {}) {
       ].join("")
     }
   });
-}
-
-async function snapshotWorkspace(rootDir, relativeDir = "") {
-  const result = {};
-  const entries = (await readdir(path.join(rootDir, relativeDir), {
-    withFileTypes: true
-  })).sort((left, right) => left.name.localeCompare(right.name));
-  for (const entry of entries) {
-    const relativePath = path.join(relativeDir, entry.name);
-    if (entry.isDirectory()) {
-      Object.assign(result, await snapshotWorkspace(rootDir, relativePath));
-    } else if (entry.isFile()) {
-      result[relativePath.replaceAll("\\", "/")] = await readFile(
-        path.join(rootDir, relativePath),
-        "utf8"
-      );
-    }
-  }
-  return result;
 }
 
 function runCli(args) {
@@ -97,9 +80,25 @@ function memoryOutput() {
   };
 }
 
+function assertSuccessfulWorkspaceChanges({
+  before,
+  after,
+  workspace,
+  result
+}) {
+  assert.deepEqual(
+    [...result.written].map((target) => path.resolve(target)).sort(),
+    [...result.plan.writableTargets].map((target) => path.resolve(target)).sort()
+  );
+  assert.deepEqual(
+    changedWorkspacePaths(before, after),
+    expectedWorkspaceChanges(before, workspace, result.written)
+  );
+}
+
 test("init dry-run emits exactly one JSON document and writes nothing", async (t) => {
   const workspace = await createSupportedWorkspace(t);
-  const before = await snapshotWorkspace(workspace);
+  const before = await snapshotCompleteWorkspace(workspace);
 
   const result = await runCli([
     "init", "--workspace", workspace, "--dry-run", "--yes", "--json"
@@ -109,11 +108,12 @@ test("init dry-run emits exactly one JSON document and writes nothing", async (t
   assert.equal(result.stderr, "");
   assert.equal(JSON.parse(result.stdout).status, "planned");
   assert.equal(result.stdout.trim().split(/\n(?=\{)/).length, 1);
-  assert.deepEqual(await snapshotWorkspace(workspace), before);
+  assert.deepEqual(await snapshotCompleteWorkspace(workspace), before);
 });
 
 test("JSON and non-TTY execution never create a prompt session", async (t) => {
   const workspace = await createSupportedWorkspace(t, { assumption: false });
+  const before = await snapshotCompleteWorkspace(workspace);
   const { runInitCommand } = await loadCliModule();
   let promptCalls = 0;
   const result = await runInitCommand({
@@ -137,41 +137,50 @@ test("JSON and non-TTY execution never create a prompt session", async (t) => {
 
   assert.equal(result.status, "needs_input");
   assert.equal(promptCalls, 0);
-  assert.deepEqual(await snapshotWorkspace(workspace), {
-    "demo-server/pom.xml": (await readFile(
-      path.join(workspace, "demo-server", "pom.xml"),
-      "utf8"
-    ))
-  });
+  assert.deepEqual(
+    await snapshotCompleteWorkspace(workspace),
+    before
+  );
 });
 
 test("non-TTY requires --yes, while --yes executes only a resolved plan", async (t) => {
   const workspace = await createSupportedWorkspace(t);
+  const before = await snapshotCompleteWorkspace(workspace);
   const withoutYes = await runCli(["init", "--workspace", workspace, "--json"]);
   assert.equal(withoutYes.code, 1);
   assert.equal(withoutYes.stderr, "");
   assert.equal(JSON.parse(withoutYes.stdout).status, "needs_input");
+  assert.deepEqual(await snapshotCompleteWorkspace(workspace), before);
 
   const withYes = await runCli([
     "init", "--workspace", workspace, "--yes", "--json"
   ]);
   assert.equal(withYes.code, 0, withYes.stderr);
   assert.equal(withYes.stderr, "");
-  assert.equal(JSON.parse(withYes.stdout).status, "applied");
+  const applied = JSON.parse(withYes.stdout);
+  assert.equal(applied.status, "applied");
+  assertSuccessfulWorkspaceChanges({
+    before,
+    after: await snapshotCompleteWorkspace(workspace),
+    workspace,
+    result: applied
+  });
 });
 
 test("plain non-TTY without --yes explains that confirmation is required", async (t) => {
   const workspace = await createSupportedWorkspace(t);
+  const before = await snapshotCompleteWorkspace(workspace);
   const result = await runCli(["init", "--workspace", workspace]);
 
   assert.equal(result.code, 1);
   assert.equal(result.stderr, "");
   assert.match(result.stdout, /需要你确认/);
+  assert.deepEqual(await snapshotCompleteWorkspace(workspace), before);
 });
 
 test("human dry-run with --yes shows the prepared result once and writes nothing", async (t) => {
   const workspace = await createSupportedWorkspace(t);
-  const before = await snapshotWorkspace(workspace);
+  const before = await snapshotCompleteWorkspace(workspace);
   const { main } = await loadCliModule();
   const output = memoryOutput();
   const error = memoryOutput();
@@ -190,12 +199,12 @@ test("human dry-run with --yes shows the prepared result once and writes nothing
     (output.value().match(/已完成检查，准备为这个项目添加开发治理基础/g) ?? []).length,
     1
   );
-  assert.deepEqual(await snapshotWorkspace(workspace), before);
+  assert.deepEqual(await snapshotCompleteWorkspace(workspace), before);
 });
 
 test("interactive cancellation exits zero and closes the prompt once", async (t) => {
   const workspace = await createSupportedWorkspace(t);
-  const before = await snapshotWorkspace(workspace);
+  const before = await snapshotCompleteWorkspace(workspace);
   const { main } = await loadCliModule();
   const output = memoryOutput();
   let closeCalls = 0;
@@ -217,7 +226,7 @@ test("interactive cancellation exits zero and closes the prompt once", async (t)
   assert.equal(code, 0);
   assert.match(output.value(), /已经取消/);
   assert.equal(closeCalls, 1);
-  assert.deepEqual(await snapshotWorkspace(workspace), before);
+  assert.deepEqual(await snapshotCompleteWorkspace(workspace), before);
 });
 
 test("interactive answers are replanned before the final confirmation", async (t) => {
@@ -304,6 +313,7 @@ test("prompt pages are capped across replanning", async () => {
 
 test("an injected abort maps to interrupted and exit code 130", async (t) => {
   const workspace = await createSupportedWorkspace(t);
+  const before = await snapshotCompleteWorkspace(workspace);
   const { exitCodeFor, runInitCommand } = await loadCliModule();
   const controller = new AbortController();
   controller.abort();
@@ -324,11 +334,12 @@ test("an injected abort maps to interrupted and exit code 130", async (t) => {
 
   assert.equal(result.status, "interrupted");
   assert.equal(exitCodeFor(result), 130);
+  assert.deepEqual(await snapshotCompleteWorkspace(workspace), before);
 });
 
 test("abort while the final prompt is pending exits 130 and closes once", async (t) => {
   const workspace = await createSupportedWorkspace(t);
-  const before = await snapshotWorkspace(workspace);
+  const before = await snapshotCompleteWorkspace(workspace);
   const { main } = await loadCliModule();
   const controller = new AbortController();
   const output = memoryOutput();
@@ -371,7 +382,7 @@ test("abort while the final prompt is pending exits 130 and closes once", async 
   assert.equal(error.value(), "");
   assert.match(output.value(), /操作已中断/);
   assert.equal(closeCalls, 1);
-  assert.deepEqual(await snapshotWorkspace(workspace), before);
+  assert.deepEqual(await snapshotCompleteWorkspace(workspace), before);
 });
 
 test("fixed business statuses map to stable exit codes", async () => {
@@ -393,6 +404,7 @@ test("fixed business statuses map to stable exit codes", async () => {
 
 test("a target changed after preview becomes conflict without overwrite", async (t) => {
   const workspace = await createSupportedWorkspace(t);
+  const before = await snapshotCompleteWorkspace(workspace);
   const { runInitCommand } = await loadCliModule();
   let changedTarget;
 
@@ -425,6 +437,13 @@ test("a target changed after preview becomes conflict without overwrite", async 
     readFile(path.join(workspace, "governance-kit.yaml"), "utf8"),
     (error) => error.code === "ENOENT"
   );
+  assert.deepEqual(
+    changedWorkspacePaths(
+      before,
+      await snapshotCompleteWorkspace(workspace)
+    ),
+    [path.relative(workspace, changedTarget).replaceAll("\\", "/")]
+  );
 });
 
 test("unknown arguments and flag scope are stable usage errors", async () => {
@@ -443,6 +462,7 @@ test("unknown arguments and flag scope are stable usage errors", async () => {
 
 test("JSON serialization failure writes no partial JSON and exits 2", async (t) => {
   const workspace = await createSupportedWorkspace(t);
+  const before = await snapshotCompleteWorkspace(workspace);
   const { main } = await loadCliModule();
   const output = memoryOutput();
   const error = memoryOutput();
@@ -462,10 +482,12 @@ test("JSON serialization failure writes no partial JSON and exits 2", async (t) 
   assert.equal(code, 2);
   assert.equal(output.value(), "");
   assert.match(error.value(), /serialization failed/);
+  assert.deepEqual(await snapshotCompleteWorkspace(workspace), before);
 });
 
 test("init startup failure exits 2 without a business JSON document", async (t) => {
   const workspace = await createSupportedWorkspace(t);
+  const before = await snapshotCompleteWorkspace(workspace);
   const { main } = await loadCliModule();
   const output = memoryOutput();
   const error = memoryOutput();
@@ -484,10 +506,12 @@ test("init startup failure exits 2 without a business JSON document", async (t) 
   assert.equal(code, 2);
   assert.equal(output.value(), "");
   assert.match(error.value(), /startup failed/);
+  assert.deepEqual(await snapshotCompleteWorkspace(workspace), before);
 });
 
 test("EOF during final confirmation returns needs_input", async (t) => {
   const workspace = await createSupportedWorkspace(t);
+  const before = await snapshotCompleteWorkspace(workspace);
   const { runInitCommand } = await loadCliModule();
   let closeCalls = 0;
   const input = new PassThrough();
@@ -519,6 +543,7 @@ test("EOF during final confirmation returns needs_input", async (t) => {
   assert.equal(result.status, "needs_input");
   assert.equal(result.code, "INPUT_REQUIRED");
   assert.equal(closeCalls, 1);
+  assert.deepEqual(await snapshotCompleteWorkspace(workspace), before);
 });
 
 test("Unix and macOS child SIGINT exits 130", {
@@ -527,6 +552,7 @@ test("Unix and macOS child SIGINT exits 130", {
     : false
 }, async (t) => {
   const workspace = await createSupportedWorkspace(t);
+  const before = await snapshotCompleteWorkspace(workspace);
   const script = `
     import { pathToFileURL } from "node:url";
     const cli = await import(pathToFileURL(process.argv[1]));
@@ -587,6 +613,7 @@ test("Unix and macOS child SIGINT exits 130", {
   assert.equal(result.code, 130, result.stderr);
   assert.equal(result.stderr, "");
   assert.match(result.stdout, /操作已中断/);
+  assert.deepEqual(await snapshotCompleteWorkspace(workspace), before);
 });
 
 for (const mode of ["monorepo", "multi-repo"]) {
@@ -602,17 +629,83 @@ for (const mode of ["monorepo", "multi-repo"]) {
     const initResult = JSON.parse(initialized.stdout);
     assert.equal(initResult.status, "applied");
     assert.equal(initResult.valid, true);
-    assert.equal(initResult.written.length > 0, true);
-    assert.notDeepEqual(await snapshotCompleteWorkspace(workspace), before);
+    const manifest = parse(await readFile(
+      path.join(workspace, "governance-kit.yaml"),
+      "utf8"
+    ));
+    assert.equal(manifest.project.repositoryMode, mode);
+    const expectedGitRoots = mode === "monorepo"
+      ? [path.resolve(workspace)]
+      : ["admin", "miniprogram", "server"].map((component) => (
+          path.resolve(workspace, component)
+        ));
+    assert.deepEqual(
+      initResult.gitStates.map(({ rootDir }) => path.resolve(rootDir)).sort(),
+      expectedGitRoots.sort()
+    );
+    assert.ok(initResult.gitStates.every(({ available }) => available === true));
+    assert.ok(initResult.gitStates.every(({ dirty }) => dirty === true));
+    assert.ok(initResult.gitStates.every(({ warning }) => warning === null));
+    const afterInit = await snapshotCompleteWorkspace(workspace);
+    assertSuccessfulWorkspaceChanges({
+      before,
+      after: afterInit,
+      workspace,
+      result: initResult
+    });
 
+    const beforeValidate = await snapshotCompleteWorkspace(workspace);
     const validated = await runCli([
       "validate", "--workspace", workspace, "--json"
     ]);
     assert.equal(validated.code, 0, validated.stderr);
     assert.equal(validated.stderr, "");
     assert.equal(JSON.parse(validated.stdout).report.valid, true);
+    assert.deepEqual(
+      await snapshotCompleteWorkspace(workspace),
+      beforeValidate
+    );
   });
 }
+
+test("complete snapshots record hidden temporary empty and linked entries without following escapes", async (t) => {
+  const workspace = await createProjectWorkspace(t, {
+    directories: ["empty-dir"],
+    files: {
+      ".hidden-file": "hidden",
+      ".governance-kit.test.tmp": "temporary"
+    }
+  });
+  const outside = await mkdtemp(path.join(tmpdir(), "governance-outside-"));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await writeFile(path.join(outside, "outside.txt"), "outside-content", "utf8");
+  const linkType = process.platform === "win32" ? "junction" : "dir";
+  const linked = await createRealLink(t, {
+    target: outside,
+    linkPath: path.join(workspace, "linked-outside"),
+    type: linkType
+  });
+  if (!linked.supported) return;
+
+  const workspaceSnapshot = await snapshotCompleteWorkspace(workspace);
+  const outsideSnapshot = await snapshotCompleteWorkspace(outside);
+
+  assert.deepEqual(workspaceSnapshot["empty-dir/"], { type: "directory" });
+  assert.equal(workspaceSnapshot[".hidden-file"].type, "file");
+  assert.equal(
+    workspaceSnapshot[".hidden-file"].content.toString("utf8"),
+    "hidden"
+  );
+  assert.equal(workspaceSnapshot[".governance-kit.test.tmp"].type, "file");
+  assert.equal(workspaceSnapshot["linked-outside"].type, "link");
+  assert.equal(typeof workspaceSnapshot["linked-outside"].device, "number");
+  assert.equal(typeof workspaceSnapshot["linked-outside"].inode, "number");
+  assert.equal("linked-outside/outside.txt" in workspaceSnapshot, false);
+  assert.equal(
+    outsideSnapshot["outside.txt"].content.toString("utf8"),
+    "outside-content"
+  );
+});
 
 for (const conflict of [
   {
@@ -770,19 +863,32 @@ test("Chinese and spaced workspace paths initialize and validate", async (t) => 
   const workspace = await createDetectedWorkspace(t, "monorepo", {
     prefix: "治理 项目-"
   });
+  const before = await snapshotCompleteWorkspace(workspace);
 
   const initialized = await runCli([
     "init", "--workspace", workspace, "--yes", "--json"
   ]);
   assert.equal(initialized.code, 0, initialized.stderr);
   assert.equal(initialized.stderr, "");
-  assert.equal(JSON.parse(initialized.stdout).status, "applied");
+  const initResult = JSON.parse(initialized.stdout);
+  assert.equal(initResult.status, "applied");
+  assertSuccessfulWorkspaceChanges({
+    before,
+    after: await snapshotCompleteWorkspace(workspace),
+    workspace,
+    result: initResult
+  });
 
+  const beforeValidate = await snapshotCompleteWorkspace(workspace);
   const validated = await runCli([
     "validate", "--workspace", workspace, "--json"
   ]);
   assert.equal(validated.code, 0, validated.stderr);
   assert.equal(JSON.parse(validated.stdout).report.valid, true);
+  assert.deepEqual(
+    await snapshotCompleteWorkspace(workspace),
+    beforeValidate
+  );
 });
 
 for (const invalid of [
@@ -846,8 +952,15 @@ test("reconfigure dry-run exposes a diff, writes nothing, then yes applies it", 
     "--reconfigure", "--yes", "--json"
   ]);
   assert.equal(applied.code, 0, applied.stderr);
-  assert.equal(JSON.parse(applied.stdout).status, "applied");
+  const appliedOutput = JSON.parse(applied.stdout);
+  assert.equal(appliedOutput.status, "applied");
   assert.equal(await readFile(manifestPath, "utf8"), original);
+  assertSuccessfulWorkspaceChanges({
+    before: beforeDryRun,
+    after: await snapshotCompleteWorkspace(workspace),
+    workspace,
+    result: appliedOutput
+  });
 });
 
 for (const fixture of [

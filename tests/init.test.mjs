@@ -4,7 +4,6 @@ import {
   mkdir,
   mkdtemp,
   readFile,
-  readdir,
   rm,
   writeFile
 } from "node:fs/promises";
@@ -33,7 +32,12 @@ import {
 } from "../tooling/lib/init-prompts.mjs";
 import { readProjectManifest } from "../tooling/lib/manifest.mjs";
 import { validateWorkspace } from "../tooling/lib/validate.mjs";
-import { createProjectWorkspace } from "./helpers/project-workspace.mjs";
+import {
+  changedWorkspacePaths,
+  createProjectWorkspace,
+  expectedWorkspaceChanges,
+  snapshotWorkspace
+} from "./helpers/project-workspace.mjs";
 
 const kitRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const componentRelativeDir = "demo-server";
@@ -97,25 +101,6 @@ async function createSupportedWorkspace(t, {
     );
   }
   return workspaceDir;
-}
-
-async function snapshotWorkspace(rootDir, relativeDir = "") {
-  const absoluteDir = path.join(rootDir, relativeDir);
-  const entries = (await readdir(absoluteDir, { withFileTypes: true }))
-    .sort((left, right) => left.name.localeCompare(right.name));
-  const result = {};
-  for (const entry of entries) {
-    const relativePath = path.join(relativeDir, entry.name);
-    if (entry.isDirectory()) {
-      Object.assign(result, await snapshotWorkspace(rootDir, relativePath));
-    } else if (entry.isFile()) {
-      result[relativePath.replaceAll("\\", "/")] = await readFile(
-        path.join(rootDir, relativePath),
-        "utf8"
-      );
-    }
-  }
-  return result;
 }
 
 function firstWritablePreviewItem(plan) {
@@ -762,15 +747,10 @@ test("a real partial write reports exact files and an unchanged rerun completes 
     );
   }
   const afterFirst = await snapshotWorkspace(workspaceDir);
-  const changedPaths = [...new Set([
-    ...Object.keys(before),
-    ...Object.keys(afterFirst)
-  ])].filter((relativePath) => (
-    before[relativePath] !== afterFirst[relativePath]
-  )).sort();
-  assert.deepEqual(changedPaths, first.written.map((targetPath) => (
-    path.relative(workspaceDir, targetPath).replaceAll("\\", "/")
-  )).sort());
+  assert.deepEqual(
+    changedWorkspacePaths(before, afterFirst),
+    expectedWorkspaceChanges(before, workspaceDir, first.written)
+  );
 
   const rerun = await initializeGovernance({
     workspaceDir,
