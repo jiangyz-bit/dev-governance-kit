@@ -10,7 +10,7 @@ const packageName = "dev-governance-kit";
 const registry = "https://registry.npmjs.org/";
 const registryEndpoint = `${registry}${packageName}`;
 const repositoryUrl =
-  "https://github.com/jiangyz-bit/dev-governance-kit.git";
+  "git+https://github.com/jiangyz-bit/dev-governance-kit.git";
 const stableVersionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const prereleaseIdentifier =
   "(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)";
@@ -129,8 +129,8 @@ export function verifyRelease(input) {
     node: ">=20.3.0"
   }, "package.json engines");
   assertExactObject(packageJson.bin, {
-    "dev-governance-kit": "./tooling/cli.mjs",
-    "governance-kit": "./tooling/cli.mjs"
+    "dev-governance-kit": "tooling/cli.mjs",
+    "governance-kit": "tooling/cli.mjs"
   }, "package.json bin");
   return {
     ok: true,

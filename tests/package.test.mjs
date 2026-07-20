@@ -5,17 +5,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { resolveNpmCli } from "../tooling/package-smoke.mjs";
 
 const kitRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const npmCli = process.env.npm_execpath ?? path.join(
-  path.dirname(process.execPath),
-  "node_modules",
-  "npm",
-  "bin",
-  "npm-cli.js"
-);
-const npmCommand = process.platform === "win32" ? process.execPath : "npm";
-const npmPrefix = process.platform === "win32" ? [npmCli] : [];
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -34,10 +26,14 @@ function run(command, args, options = {}) {
   });
 }
 
+async function runNpm(args, options = {}) {
+  return run(process.execPath, [await resolveNpmCli(), ...args], options);
+}
+
 test("package exposes the governance CLI and supported Node version", async () => {
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(pkg.type, "module");
-  assert.equal(pkg.bin["governance-kit"], "./tooling/cli.mjs");
+  assert.equal(pkg.bin["governance-kit"], "tooling/cli.mjs");
   assert.equal(pkg.engines.node, ">=20.3.0");
   assert.equal(pkg.scripts.test, "node --test tests/*.test.mjs");
 });
@@ -47,7 +43,7 @@ test("package metadata is ready for the public npm registry", async () => {
   assert.equal(pkg.private, undefined);
   assert.equal(pkg.author, "coogle");
   assert.equal(pkg.license, "MIT");
-  assert.equal(pkg.repository.url, "https://github.com/jiangyz-bit/dev-governance-kit.git");
+  assert.equal(pkg.repository.url, "git+https://github.com/jiangyz-bit/dev-governance-kit.git");
   assert.equal(pkg.homepage, "https://github.com/jiangyz-bit/dev-governance-kit#readme");
   assert.equal(pkg.bugs.url, "https://github.com/jiangyz-bit/dev-governance-kit/issues");
   assert.deepEqual(pkg.publishConfig, {
@@ -55,8 +51,8 @@ test("package metadata is ready for the public npm registry", async () => {
     registry: "https://registry.npmjs.org/"
   });
   assert.deepEqual(pkg.bin, {
-    "dev-governance-kit": "./tooling/cli.mjs",
-    "governance-kit": "./tooling/cli.mjs"
+    "dev-governance-kit": "tooling/cli.mjs",
+    "governance-kit": "tooling/cli.mjs"
   });
   assert.deepEqual(pkg.files, [
     "blueprints/",
@@ -87,10 +83,8 @@ test("help advertises init but not the unimplemented create command", async () =
 test("npm package contains runtime files but excludes internal project material", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "governance-pack-list-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const packed = await run(
-    npmCommand,
+  const packed = await runNpm(
     [
-      ...npmPrefix,
       "pack",
       "--dry-run",
       "--json",
@@ -144,21 +138,36 @@ test("npm package contains runtime files but excludes internal project material"
   }
 });
 
+test("npm publish dry-run accepts canonical public metadata without correcting it", async () => {
+  const published = await runNpm(
+    [
+      "publish",
+      "--dry-run",
+      "--access",
+      "public"
+    ],
+    { cwd: kitRoot }
+  );
+
+  assert.equal(published.code, 0, published.stderr);
+  assert.doesNotMatch(
+    published.stderr,
+    /auto-corrected|errors corrected|script name .* invalid|repository\.url.*normalized/i
+  );
+});
+
 test("packed CLI runs after a clean local install", async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "governance-package-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const packed = await run(
-    npmCommand,
-    [...npmPrefix, "pack", "--pack-destination", root, "--silent"],
+  const packed = await runNpm(
+    ["pack", "--pack-destination", root, "--silent"],
     { cwd: kitRoot }
   );
   assert.equal(packed.code, 0, packed.stderr);
   const archive = (await readdir(root)).find((entry) => entry.endsWith(".tgz"));
   assert.ok(archive, "npm pack 应生成安装包");
-  const installed = await run(
-    npmCommand,
+  const installed = await runNpm(
     [
-      ...npmPrefix,
       "install",
       "--ignore-scripts",
       "--no-audit",
@@ -186,10 +195,13 @@ test("packed CLI runs after a clean local install", async (t) => {
   });
   assert.equal(help.code, 0, help.stderr);
   assert.match(help.stdout, /governance-kit init/);
+  assert.equal(
+    installedManifest.repository.url,
+    "git+https://github.com/jiangyz-bit/dev-governance-kit.git"
+  );
   for (const bin of ["dev-governance-kit", "governance-kit"]) {
-    assert.equal(installedManifest.bin[bin], "./tooling/cli.mjs");
-    const smoke = await run(npmCommand, [
-      ...npmPrefix,
+    assert.equal(installedManifest.bin[bin], "tooling/cli.mjs");
+    const smoke = await runNpm([
       "exec",
       "--no",
       "--",

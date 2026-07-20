@@ -20,7 +20,7 @@ function validPackage(overrides = {}) {
     license: "MIT",
     repository: {
       type: "git",
-      url: "https://github.com/jiangyz-bit/dev-governance-kit.git"
+      url: "git+https://github.com/jiangyz-bit/dev-governance-kit.git"
     },
     publishConfig: {
       access: "public",
@@ -28,8 +28,8 @@ function validPackage(overrides = {}) {
     },
     engines: { node: ">=20.3.0" },
     bin: {
-      "dev-governance-kit": "./tooling/cli.mjs",
-      "governance-kit": "./tooling/cli.mjs"
+      "dev-governance-kit": "tooling/cli.mjs",
+      "governance-kit": "tooling/cli.mjs"
     },
     ...overrides
   };
@@ -146,14 +146,19 @@ test("verifyRelease enforces all public package metadata", () => {
     [{ author: "someone" }, /author/],
     [{ license: "Apache-2.0" }, /license/],
     [{ repository: { type: "git", url: "https://example.test/repo.git" } }, /repository/],
-    [{ repository: { type: "svn", url: "https://github.com/jiangyz-bit/dev-governance-kit.git" } }, /repository/],
+    [{ repository: { type: "git", url: "https://github.com/jiangyz-bit/dev-governance-kit.git" } }, /repository/],
+    [{ repository: { type: "svn", url: "git+https://github.com/jiangyz-bit/dev-governance-kit.git" } }, /repository/],
     [{ publishConfig: { access: "restricted", registry: "https://registry.npmjs.org/" } }, /publishConfig/],
     [{ publishConfig: { access: "public", registry: "https://mirror.invalid/" } }, /publishConfig/],
     [{ engines: { node: ">=18" } }, /engines/],
-    [{ bin: { "dev-governance-kit": "./tooling/cli.mjs" } }, /bin/],
+    [{ bin: { "dev-governance-kit": "tooling/cli.mjs" } }, /bin/],
     [{ bin: {
-      "dev-governance-kit": "./other.mjs",
+      "dev-governance-kit": "./tooling/cli.mjs",
       "governance-kit": "./tooling/cli.mjs"
+    } }, /bin/],
+    [{ bin: {
+      "dev-governance-kit": "other.mjs",
+      "governance-kit": "tooling/cli.mjs"
     } }, /bin/],
     [{ version: "v0.1.0" }, /version/],
     [{ version: "0.1.0 " }, /version/]
