@@ -153,8 +153,8 @@ test("normalizes and sorts inherited scan warning paths", async (t) => {
   const workspaceDir = await createProjectWorkspace(t);
   const scan = await scanWorkspace({ workspaceDir });
   scan.warnings.push(
-    { code: "LINK_SKIPPED", path: `${workspaceDir.replaceAll("/", "\\\\")}\\\\z-link` },
-    { code: "LINK_SKIPPED", path: `${workspaceDir.replaceAll("/", "\\\\")}\\\\a-link` }
+    { code: "LINK_SKIPPED", path: path.join(workspaceDir, "z-link") },
+    { code: "LINK_SKIPPED", path: path.join(workspaceDir, "a-link") }
   );
 
   const result = await detectWorkspace({ workspaceDir, scan });
