@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import { GovernanceError } from "./errors.mjs";
 import {
   assertRealPathInside,
@@ -96,7 +95,15 @@ function sortReport(report) {
   return report;
 }
 
-export async function createApplyPreview({ context, signal }) {
+async function captureTarget(targetPath) {
+  return snapshotPath(targetPath, { includeContent: true });
+}
+
+export async function createApplyPreview({
+  context,
+  signal,
+  capturePath = captureTarget
+}) {
   throwIfAborted(signal);
   const plan = await buildApplyPlan(context);
   throwIfAborted(signal);
@@ -105,11 +112,8 @@ export async function createApplyPreview({ context, signal }) {
 
   for (const operation of plan.operations) {
     throwIfAborted(signal);
-    const snapshot = await snapshotPath(operation.targetPath);
-    throwIfAborted(signal);
-    const existing = snapshot.exists
-      ? await readFile(operation.targetPath, "utf8")
-      : undefined;
+    const captured = await capturePath(operation.targetPath);
+    const { content: existing, ...snapshot } = captured;
     throwIfAborted(signal);
     const classification = classify(operation, existing);
     operations.push({ operation, classification, snapshot });

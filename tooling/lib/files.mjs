@@ -134,18 +134,23 @@ export async function assertRealPathInside(rootDir, targetPath, {
   return target;
 }
 
-export async function snapshotPath(filePath) {
+export async function snapshotPath(filePath, {
+  includeContent = false,
+  fsOperations = {}
+} = {}) {
+  const lstatTarget = fsOperations.lstat ?? lstat;
+  const openTarget = fsOperations.open ?? open;
   let handle;
   let observedExisting = false;
   try {
-    const linkInfo = await lstat(filePath);
+    const linkInfo = await lstatTarget(filePath);
     observedExisting = true;
     if (linkInfo.isSymbolicLink()) {
       throw new GovernanceError("UNSAFE_REAL_PATH", `目标是链接：${filePath}`);
     }
-    handle = await open(filePath, "r");
+    handle = await openTarget(filePath, "r");
     const before = await handle.stat();
-    const currentLinkInfo = await lstat(filePath);
+    const currentLinkInfo = await lstatTarget(filePath);
     if (currentLinkInfo.isSymbolicLink() || !sameIdentity(currentLinkInfo, before)) {
       throw new GovernanceError("TARGET_CHANGED_DURING_READ", `打开时目标发生变化：${filePath}`);
     }
@@ -158,7 +163,7 @@ export async function snapshotPath(filePath) {
     ) {
       throw new GovernanceError("TARGET_CHANGED_DURING_READ", `读取时目标发生变化：${filePath}`);
     }
-    return {
+    const snapshot = {
       path: filePath,
       exists: true,
       size: after.size,
@@ -167,6 +172,9 @@ export async function snapshotPath(filePath) {
       mtimeMs: after.mtimeMs,
       hash: createHash("sha256").update(content).digest("hex")
     };
+    return includeContent
+      ? { ...snapshot, content: content.toString("utf8") }
+      : snapshot;
   } catch (error) {
     if (error.code === "ENOENT" && !observedExisting) {
       return { path: filePath, exists: false, size: 0, hash: null };

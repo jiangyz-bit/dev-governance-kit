@@ -7,8 +7,9 @@ import {
   createApplyPreview,
   executeApplyPreview
 } from "../tooling/lib/apply-preview.mjs";
-import { writeUtf8Atomic } from "../tooling/lib/files.mjs";
+import { snapshotPath, writeUtf8Atomic } from "../tooling/lib/files.mjs";
 import { loadProjectManifest } from "../tooling/lib/manifest.mjs";
+import { buildApplyPlan } from "../tooling/lib/planner.mjs";
 import { createFixtureWorkspace } from "./helpers/workspace.mjs";
 
 const kitRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -30,6 +31,41 @@ test("classifies all operations without writing", async (t) => {
     readFile(firstTarget, "utf8"),
     (error) => error.code === "ENOENT"
   );
+});
+
+test("classifies from one captured handle without retaining captured content", async (t) => {
+  const workspace = await createFixtureWorkspace(t, "multi-repo");
+  const context = await loadProjectManifest(workspace, kitRoot);
+  const plan = await buildApplyPlan(context);
+  const firstOperation = plan.operations[0];
+  const capturedUserContent = "captured user secret";
+  await mkdir(path.dirname(firstOperation.targetPath), { recursive: true });
+  await writeFile(firstOperation.targetPath, firstOperation.content, "utf8");
+  let captureCalls = 0;
+
+  const preview = await createApplyPreview({
+    context,
+    capturePath: async (targetPath) => {
+      captureCalls += 1;
+      if (targetPath !== firstOperation.targetPath) {
+        return snapshotPath(targetPath, { includeContent: true });
+      }
+      await writeFile(targetPath, capturedUserContent, "utf8");
+      const capture = await snapshotPath(targetPath, { includeContent: true });
+      await writeFile(targetPath, firstOperation.content, "utf8");
+      return capture;
+    }
+  });
+
+  const firstItem = preview.operations.find(
+    (item) => item.operation.targetPath === firstOperation.targetPath
+  );
+  assert.equal(captureCalls, preview.operations.length);
+  assert.equal(firstItem.classification.category, "conflicts");
+  assert.equal(firstItem.classification.entry.code, "USER_FILE_CONFLICT");
+  assert.equal("content" in firstItem.snapshot, false);
+  assert.equal(JSON.stringify(firstItem.snapshot).includes(capturedUserContent), false);
+  assert.equal(JSON.stringify(preview.report).includes(capturedUserContent), false);
 });
 
 test("stops before writing if any previewed target changed", async (t) => {

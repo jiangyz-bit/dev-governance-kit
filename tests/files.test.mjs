@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   access,
+  lstat,
   mkdir,
   mkdtemp,
   open,
@@ -128,6 +130,73 @@ test("detects a same-content file replacement after preview", async (t) => {
   await assert.rejects(
     assertSnapshotUnchanged(snapshot),
     (error) => error.code === "TARGET_CHANGED_AFTER_PREVIEW"
+  );
+});
+
+test("optionally captures UTF-8 content from the snapshotted file handle", async (t) => {
+  const workspaceDir = await makeWorkspace(t);
+  const target = path.join(workspaceDir, "target.txt");
+  const content = "同一文件句柄内容\n";
+  await writeFile(target, content, "utf8");
+
+  const snapshot = await snapshotPath(target);
+  const captured = await snapshotPath(target, { includeContent: true });
+  const { content: capturedContent, ...capturedSnapshot } = captured;
+
+  assert.equal("content" in snapshot, false);
+  assert.equal(capturedContent, content);
+  assert.equal(
+    captured.hash,
+    createHash("sha256").update(Buffer.from(capturedContent, "utf8")).digest("hex")
+  );
+  assert.deepEqual(capturedSnapshot, snapshot);
+});
+
+test("normalizes a target disappearing during snapshot capture", async (t) => {
+  const workspaceDir = await makeWorkspace(t);
+  const target = path.join(workspaceDir, "target.txt");
+  await writeFile(target, "sensitive content", "utf8");
+  let calls = 0;
+
+  await assert.rejects(
+    snapshotPath(target, {
+      includeContent: true,
+      fsOperations: {
+        lstat: async (...args) => {
+          calls += 1;
+          if (calls === 2) {
+            const error = new Error("simulated native ENOENT");
+            error.code = "ENOENT";
+            throw error;
+          }
+          return lstat(...args);
+        }
+      }
+    }),
+    (error) =>
+      error.code === "TARGET_CHANGED_DURING_READ"
+      && !error.message.includes("simulated native ENOENT")
+      && !JSON.stringify(error.details).includes("sensitive content")
+  );
+});
+
+test("normalizes a target replacement during snapshot capture", async (t) => {
+  const workspaceDir = await makeWorkspace(t);
+  const target = path.join(workspaceDir, "target.txt");
+  const replacement = path.join(workspaceDir, "replacement.txt");
+  await writeFile(target, "original sensitive content", "utf8");
+  await writeFile(replacement, "replacement sensitive content", "utf8");
+
+  await assert.rejects(
+    snapshotPath(target, {
+      includeContent: true,
+      fsOperations: {
+        open: () => open(replacement, "r")
+      }
+    }),
+    (error) =>
+      error.code === "TARGET_CHANGED_DURING_READ"
+      && !JSON.stringify(error.details).includes("sensitive content")
   );
 });
 
