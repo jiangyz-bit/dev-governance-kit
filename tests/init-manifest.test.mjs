@@ -231,7 +231,7 @@ test("keeps absolute component paths out of the generated manifest", async (t) =
   assert.equal(result.manifest, null);
 });
 
-test("normalizes workspace-root component candidates to schema-valid dot paths", async (t) => {
+test("refuses to assign multiple component roles to the same project root", async (t) => {
   const workspaceDir = await workspace(t);
   const result = resolveInitManifest({
     workspaceDir,
@@ -246,10 +246,39 @@ test("normalizes workspace-root component candidates to schema-valid dot paths",
     answers: {}
   });
 
-  assert.equal(result.status, "ready");
-  assert.deepEqual(Object.values(result.manifest.components).map((component) => component.path), [".", ".", "."]);
-  assert.doesNotThrow(() => validateSchema("governance-kit", result.manifest));
-  assert.doesNotMatch(renderInitManifest(result.manifest), /\\/);
+  assert.equal(result.status, "needs_input");
+  assert.equal(result.code, "COMPONENT_ROOT_AMBIGUOUS");
+  assert.equal(result.manifest, null);
+});
+
+test("refuses equivalent normalized component roots but allows nested distinct roots", async (t) => {
+  const workspaceDir = await workspace(t);
+  const duplicate = resolveInitManifest({
+    workspaceDir,
+    detection: detection({
+      candidates: [
+        { ...components.server, path: "apps/service" },
+        { ...components.admin, path: "apps/./service" }
+      ],
+      gitMarkers: [gitMarker(workspaceDir)]
+    }),
+    answers: {}
+  });
+  assert.equal(duplicate.status, "needs_input");
+  assert.equal(duplicate.code, "COMPONENT_ROOT_AMBIGUOUS");
+
+  const nested = resolveInitManifest({
+    workspaceDir,
+    detection: detection({
+      candidates: [
+        { ...components.server, path: "apps" },
+        { ...components.admin, path: "apps/admin" }
+      ],
+      gitMarkers: [gitMarker(workspaceDir)]
+    }),
+    answers: {}
+  });
+  assert.equal(nested.status, "ready");
 });
 
 test("blocks nested Git repositories below selected components until repository mode is answered", async (t) => {

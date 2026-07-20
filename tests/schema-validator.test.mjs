@@ -75,6 +75,71 @@ test("rejects paths outside the workspace", () => {
   );
 });
 
+test("rejects duplicate component roots across manifest fields", () => {
+  assert.throws(
+    () => validateSchema("governance-kit", {
+      schemaVersion: 1,
+      project: { name: "demo", repositoryMode: "monorepo" },
+      components: {
+        server: { profile: "java-springboot-mybatis", path: "." },
+        admin: { profile: "react-admin", path: "./" }
+      },
+      contracts: { statusRegistryOwner: "server", apiContractOwner: "server" },
+      generation: { conflictPolicy: "report" }
+    }),
+    (error) => error.code === "SCHEMA_INVALID"
+      && error.details?.reason === "DUPLICATE_COMPONENT_ROOT"
+  );
+});
+
+test("project context rejects real-path aliases but permits nested distinct roots", async (t) => {
+  const kitRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const workspaceDir = await mkdtemp(path.join(tmpdir(), "governance-context-roots-"));
+  t.after(() => rm(workspaceDir, { recursive: true, force: true }));
+  await mkdir(path.join(workspaceDir, "apps", "admin"), { recursive: true });
+
+  const base = {
+    schemaVersion: 1,
+    project: { name: "demo", repositoryMode: "monorepo" },
+    contracts: { statusRegistryOwner: "server", apiContractOwner: "server" },
+    generation: { conflictPolicy: "report" }
+  };
+  const nested = await createProjectContext({
+    workspaceDir,
+    kitRoot,
+    requireComponentDirs: true,
+    manifest: {
+      ...base,
+      components: {
+        server: { profile: "java-springboot-mybatis", path: "apps" },
+        admin: { profile: "react-admin", path: "apps/admin" }
+      }
+    }
+  });
+  assert.equal(Object.keys(nested.components).length, 2);
+
+  if (process.platform !== "win32") {
+    const { symlink } = await import("node:fs/promises");
+    await symlink(path.join(workspaceDir, "apps"), path.join(workspaceDir, "alias"), "dir");
+    await assert.rejects(
+      createProjectContext({
+        workspaceDir,
+        kitRoot,
+        requireComponentDirs: true,
+        manifest: {
+          ...base,
+          components: {
+            server: { profile: "java-springboot-mybatis", path: "apps" },
+            admin: { profile: "react-admin", path: "alias" }
+          }
+        }
+      }),
+      (error) => error.code === "DUPLICATE_COMPONENT_ROOT"
+        || error.code === "UNSAFE_REAL_PATH"
+    );
+  }
+});
+
 test("creates project context from an in-memory manifest", async (t) => {
   const kitRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const workspaceDir = await mkdtemp(path.join(tmpdir(), "governance-context-"));

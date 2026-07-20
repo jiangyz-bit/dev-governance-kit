@@ -888,26 +888,26 @@ export async function executeInitialization(plan, {
       ? appliedResult(plan, validation, written)
       : failedValidationResult(plan, validation, written);
   } catch (error) {
-    if (error instanceof InfrastructureFailure) throw error.cause;
-    if (isValidationInfrastructureError(error)) throw error;
-    if (
-      !isInterrupted(error, signal)
-      && (
-        isKitResourceFileSystemError(error, plan.kitRoot)
-        || (
-          validationError
-            ? !isExpectedValidationError(error, plan.workspaceDir)
-            : !isExpectedWorkspaceError(error, plan.workspaceDir)
-        )
-      )
-    ) {
-      throw error;
-    }
-    appendWritten(written, error?.details?.written);
-    if (writeOutcomeUncertain) {
+    const cause = error instanceof InfrastructureFailure ? error.cause : error;
+    appendWritten(written, cause?.details?.written);
+    if (writeOutcomeUncertain || validationError) {
       await appendCommittedWrites(plan, written);
     }
-    const failed = normalizeExecutionError(error, signal);
+    const interrupted = isInterrupted(cause, signal);
+    const rawInfrastructure = (
+      error instanceof InfrastructureFailure
+      || isValidationInfrastructureError(cause)
+      || isKitResourceFileSystemError(cause, plan.kitRoot)
+      || (
+        validationError
+          ? !isExpectedValidationError(cause, plan.workspaceDir)
+          : !isExpectedWorkspaceError(cause, plan.workspaceDir)
+      )
+    );
+    if (!interrupted && rawInfrastructure && written.length === 0) {
+      throw cause;
+    }
+    const failed = normalizeExecutionError(cause, signal);
     if (failed.code === "INTERRUPTED") {
       return interruptedResult(plan, failed, written);
     }

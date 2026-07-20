@@ -262,6 +262,13 @@ export async function runInitCommand(options, io, dependencies = {}) {
     return execute(current, { signal: io.signal });
   }
 
+  if (
+    current.status === "ready"
+    && (current.report?.conflicts?.length ?? 0) > 0
+  ) {
+    return plannedResult(current);
+  }
+
   let prompts;
   const pageState = { pagesUsed: 0 };
   try {

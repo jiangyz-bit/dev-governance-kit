@@ -1,5 +1,5 @@
 import path from "node:path";
-import { lstat } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { loadCatalog } from "./catalog.mjs";
 import { GovernanceError } from "./errors.mjs";
 import { assertRealPathInside, readYamlFile, resolveInside } from "./files.mjs";
@@ -25,6 +25,7 @@ export async function createProjectContext({
   const resolvedCatalog = catalog ?? await loadCatalog(resolvedKitRoot);
   throwIfAborted(signal);
   const components = {};
+  const componentRoots = new Map();
 
   for (const [type, component] of Object.entries(manifest.components)) {
     throwIfAborted(signal);
@@ -43,6 +44,7 @@ export async function createProjectContext({
       );
     }
     const rootDir = resolveInside(resolvedWorkspace, component.path);
+    let canonicalRoot = rootDir;
     if (requireComponentDirs) {
       try {
         await assertRealPathInside(
@@ -54,6 +56,7 @@ export async function createProjectContext({
         if (!info.isDirectory()) {
           throw new Error("组件路径不是目录");
         }
+        canonicalRoot = await realpath(rootDir);
       } catch (error) {
         if (error.code === "UNSAFE_REAL_PATH") throw error;
         throw new GovernanceError("COMPONENT_DIR_INVALID", `组件目录不可用：${rootDir}`, {
@@ -63,6 +66,20 @@ export async function createProjectContext({
         });
       }
     }
+    const rootKey = process.platform === "win32"
+      ? canonicalRoot.toLowerCase()
+      : canonicalRoot;
+    if (componentRoots.has(rootKey)) {
+      throw new GovernanceError(
+        "DUPLICATE_COMPONENT_ROOT",
+        "多个组件不能使用同一个真实根目录",
+        {
+          components: [componentRoots.get(rootKey), type],
+          rootDir: canonicalRoot
+        }
+      );
+    }
+    componentRoots.set(rootKey, type);
     components[type] = {
       type,
       rootDir,

@@ -12,9 +12,19 @@ function compareStrings(left, right) {
 function normalizedPath(value) {
   if (typeof value !== "string") return null;
   if (value.length === 0) return ".";
-  const normalized = value.replace(/\\/g, "/").replace(/^\.\//, "");
-  if (path.posix.isAbsolute(normalized) || path.win32.isAbsolute(value) || normalized.split("/").includes("..")) return null;
+  const portable = value.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (
+    path.posix.isAbsolute(portable)
+    || path.win32.isAbsolute(value)
+    || portable.split("/").includes("..")
+  ) return null;
+  const normalized = path.posix.normalize(portable);
   return normalized || ".";
+}
+
+function pathKey(value) {
+  const resolved = path.resolve(value);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
 function sortCandidates(candidates) {
@@ -202,6 +212,17 @@ export function resolveInitManifest({ workspaceDir, detection, answers = {} }) {
     ...candidate,
     rootDir: path.resolve(workspaceDir, candidate.path)
   }));
+  const selectedRoots = new Map();
+  for (const candidate of candidatesWithRoots) {
+    const key = pathKey(candidate.rootDir);
+    if (selectedRoots.has(key)) {
+      return resultWithQuestion("COMPONENT_ROOT_AMBIGUOUS", detection, {
+        components: [selectedRoots.get(key).component, candidate.component],
+        path: candidate.path
+      });
+    }
+    selectedRoots.set(key, candidate);
+  }
   const repositoryMode = repositoryModeAnswer(answers)
     ?? (hasNestedGitRepository(candidatesWithRoots, detection.gitMarkers ?? [])
       ? { code: "REPOSITORY_MODE_UNCLEAR", reason: "NESTED_GIT_REPOSITORY" }

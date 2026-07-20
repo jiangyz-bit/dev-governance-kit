@@ -202,6 +202,50 @@ test("human dry-run with --yes shows the prepared result once and writes nothing
   assert.deepEqual(await snapshotCompleteWorkspace(workspace), before);
 });
 
+test("interactive static conflict returns before constructing any prompt", async () => {
+  const { runInitCommand } = await loadCliModule();
+  let promptCalls = 0;
+  let executeCalls = 0;
+  const result = await runInitCommand({
+    command: "init",
+    workspace: process.cwd(),
+    dryRun: false,
+    yes: false,
+    verbose: false,
+    json: false,
+    reconfigure: false
+  }, {
+    input: { isTTY: true },
+    output: memoryOutput(),
+    signal: new AbortController().signal
+  }, {
+    async planInitialization() {
+      return {
+        command: "init",
+        workspaceDir: process.cwd(),
+        workspace: process.cwd(),
+        status: "ready",
+        report: { conflicts: [{ code: "USER_FILE_CONFLICT", path: "AGENTS.md" }] },
+        manifestChange: { category: "unchanged" },
+        gitStates: [],
+        detected: [],
+        writableTargets: []
+      };
+    },
+    createPromptSession() {
+      promptCalls += 1;
+      throw new Error("静态冲突不应创建 prompt");
+    },
+    async executeInitialization() {
+      executeCalls += 1;
+    }
+  });
+
+  assert.equal(result.status, "conflict");
+  assert.equal(promptCalls, 0);
+  assert.equal(executeCalls, 0);
+});
+
 test("interactive cancellation exits zero and closes the prompt once", async (t) => {
   const workspace = await createSupportedWorkspace(t);
   const before = await snapshotCompleteWorkspace(workspace);
@@ -994,3 +1038,35 @@ for (const fixture of [
     assert.deepEqual(await snapshotCompleteWorkspace(workspace), before);
   });
 }
+
+test("public CLI never writes when one real root matches multiple components", async (t) => {
+  const workspace = await createProjectWorkspace(t, {
+    directories: [".git"],
+    files: {
+      "admin-service/pom.xml": [
+        "<project><dependencies>",
+        "<dependency><artifactId>spring-boot</artifactId></dependency>",
+        "<dependency><artifactId>mybatis</artifactId></dependency>",
+        "<dependency><artifactId>flyway</artifactId></dependency>",
+        "</dependencies></project>"
+      ].join(""),
+      "admin-service/package.json": JSON.stringify({
+        dependencies: { react: "19.0.0" },
+        devDependencies: { vite: "7.0.0" }
+      }),
+      "admin-service/tsconfig.json": "{}"
+    }
+  });
+  const before = await snapshotCompleteWorkspace(workspace);
+
+  const result = await runCli([
+    "init", "--workspace", workspace, "--yes", "--json"
+  ]);
+
+  assert.equal(result.code, 1);
+  assert.equal(result.stderr, "");
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.status, "needs_input");
+  assert.equal(output.code, "COMPONENT_ROOT_AMBIGUOUS");
+  assert.deepEqual(await snapshotCompleteWorkspace(workspace), before);
+});

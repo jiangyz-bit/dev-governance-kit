@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import path from "node:path";
 import Ajv from "ajv";
 import { GovernanceError } from "./errors.mjs";
 
@@ -25,5 +26,29 @@ export function validateSchema(schemaName, value) {
     throw new GovernanceError("SCHEMA_INVALID", `${schemaName} 验证失败`, {
       errors: validate.errors
     });
+  }
+  if (schemaName === "governance-kit") {
+    const roots = new Map();
+    for (const [component, config] of Object.entries(value.components)) {
+      const normalized = path.posix.resolve(
+        "/",
+        config.path.replaceAll("\\", "/")
+      );
+      const key = process.platform === "win32"
+        ? normalized.toLowerCase()
+        : normalized;
+      if (roots.has(key)) {
+        throw new GovernanceError(
+          "SCHEMA_INVALID",
+          "governance-kit 验证失败：多个组件不能使用同一个根目录",
+          {
+            reason: "DUPLICATE_COMPONENT_ROOT",
+            components: [roots.get(key), component],
+            path: normalized
+          }
+        );
+      }
+      roots.set(key, component);
+    }
   }
 }

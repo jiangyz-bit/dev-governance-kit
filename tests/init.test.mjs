@@ -308,6 +308,36 @@ test("does not write anything when a governance target conflicts", async (t) => 
   assert.deepEqual(await snapshotWorkspace(workspaceDir), before);
 });
 
+test("existing manifest with duplicate component roots is stable INVALID_MANIFEST", async (t) => {
+  const workspaceDir = await createSupportedWorkspace(t, {
+    manifestSource: renderInitManifest({
+      ...manifestFor("demo"),
+      components: {
+        server: {
+          profile: "java-springboot-mybatis",
+          path: "demo-server"
+        },
+        admin: {
+          profile: "react-admin",
+          path: "demo-server/."
+        }
+      }
+    })
+  });
+  const before = await snapshotWorkspace(workspaceDir);
+
+  const result = await planInitialization({
+    workspaceDir,
+    kitRoot,
+    reconfigure: true
+  });
+
+  assert.equal(result.status, "conflict");
+  assert.equal(result.code, "INVALID_MANIFEST");
+  assert.equal(result.failed.details.cause, "SCHEMA_INVALID");
+  assert.deepEqual(await snapshotWorkspace(workspaceDir), before);
+});
+
 test("dry-run reports a static governance conflict instead of planned", async (t) => {
   const workspaceDir = await createSupportedWorkspace(t, {
     extraFiles: {
@@ -1168,7 +1198,7 @@ test("execution preflight receives the same signal and interrupts before writing
   assert.deepEqual(await snapshotWorkspace(workspaceDir), before);
 });
 
-test("execution rethrows programming errors instead of converting them to business results", async (t) => {
+test("execution keeps prewrite programming errors raw but reports post-write errors safely", async (t) => {
   const preflightWorkspace = await createSupportedWorkspace(t);
   const preflightPlan = await planInitialization({
     workspaceDir: preflightWorkspace,
@@ -1190,17 +1220,35 @@ test("execution rethrows programming errors instead of converting them to busine
     workspaceDir: validateWorkspaceDir,
     kitRoot
   });
+  const result = await executeInitialization(validatePlan, {
+    validate: async () => {
+      throw new TypeError("注入验证编程错误");
+    }
+  });
+  assert.equal(result.status, "partial_failure");
+  assert.equal(result.code, "INIT_FAILED");
+  assert.equal(result.failed.message, "注入验证编程错误");
+  assert.equal("stack" in result.failed, false);
+  assert.deepEqual([...result.written].sort(), [...validatePlan.writableTargets].sort());
+  assert.equal(result.recovery.safeToRerun, true);
+
+  const unchangedPlan = await planInitialization({
+    workspaceDir: validateWorkspaceDir,
+    kitRoot
+  });
+  assert.deepEqual(unchangedPlan.writableTargets, []);
   await assert.rejects(
-    executeInitialization(validatePlan, {
+    executeInitialization(unchangedPlan, {
       validate: async () => {
-        throw new TypeError("注入验证编程错误");
+        throw new TypeError("零写入验证编程错误");
       }
     }),
     (error) => error instanceof TypeError
+      && error.message === "零写入验证编程错误"
   );
 });
 
-test("execution rethrows missing kit resources discovered during validation", async (t) => {
+test("missing kit resources discovered after writes return recoverable partial failure", async (t) => {
   const workspaceDir = await createSupportedWorkspace(t);
   const copiedKitRoot = await createKitCopy(t);
   const plan = await planInitialization({
@@ -1210,16 +1258,39 @@ test("execution rethrows missing kit resources discovered during validation", as
   const missingDirectory = path.join(copiedKitRoot, "templates", "shared");
   await rm(missingDirectory, { recursive: true });
 
+  const result = await executeInitialization(plan);
+  assert.equal(result.status, "partial_failure");
+  assert.equal(result.code, "ENOENT");
+  assert.deepEqual([...result.written].sort(), [...plan.writableTargets].sort());
+  assert.equal(result.recovery.safeToRerun, true);
+});
+
+test("missing validation resources remain raw when execution wrote nothing", async (t) => {
+  const workspaceDir = await createSupportedWorkspace(t);
+  const copiedKitRoot = await createKitCopy(t);
+  const firstPlan = await planInitialization({
+    workspaceDir,
+    kitRoot: copiedKitRoot
+  });
+  const first = await executeInitialization(firstPlan);
+  assert.equal(first.status, "applied");
+
+  const unchangedPlan = await planInitialization({
+    workspaceDir,
+    kitRoot: copiedKitRoot
+  });
+  assert.deepEqual(unchangedPlan.writableTargets, []);
+  const missingDirectory = path.join(copiedKitRoot, "templates", "shared");
+  await rm(missingDirectory, { recursive: true });
+
   await assert.rejects(
-    executeInitialization(plan),
-    (error) => (
-      error.code === "ENOENT"
+    executeInitialization(unchangedPlan),
+    (error) => error.code === "ENOENT"
       && path.resolve(error.path) === path.resolve(missingDirectory)
-    )
   );
 });
 
-test("execution rethrows packaged catalog validation errors discovered after planning", async (t) => {
+test("packaged catalog validation errors discovered after writes return partial failure", async (t) => {
   const workspaceDir = await createSupportedWorkspace(t);
   const copiedKitRoot = await createKitCopy(t);
   const plan = await planInitialization({
@@ -1237,8 +1308,41 @@ test("execution rethrows packaged catalog validation errors discovered after pla
     "utf8"
   );
 
+  const result = await executeInitialization(plan);
+  assert.equal(result.status, "partial_failure");
+  assert.equal(result.code, "SCHEMA_INVALID");
+  assert.deepEqual([...result.written].sort(), [...plan.writableTargets].sort());
+  assert.equal(result.recovery.safeToRerun, true);
+});
+
+test("validation schema errors remain raw when execution wrote nothing", async (t) => {
+  const workspaceDir = await createSupportedWorkspace(t);
+  const copiedKitRoot = await createKitCopy(t);
+  const firstPlan = await planInitialization({
+    workspaceDir,
+    kitRoot: copiedKitRoot
+  });
+  const first = await executeInitialization(firstPlan);
+  assert.equal(first.status, "applied");
+
+  const unchangedPlan = await planInitialization({
+    workspaceDir,
+    kitRoot: copiedKitRoot
+  });
+  assert.deepEqual(unchangedPlan.writableTargets, []);
+  await writeFile(
+    path.join(
+      copiedKitRoot,
+      "profiles",
+      "java-springboot-mybatis",
+      "profile.yaml"
+    ),
+    "id: INVALID\n",
+    "utf8"
+  );
+
   await assert.rejects(
-    executeInitialization(plan),
+    executeInitialization(unchangedPlan),
     (error) => error?.code === "SCHEMA_INVALID"
   );
 });
