@@ -1,5 +1,27 @@
 import path from "node:path";
 
+const ansiEscapePattern = /\u001B(?:\[[0-?]*[ -/]*[@-~]|[@-_])/g;
+const terminalControlPattern = /[\u0000-\u001f\u007f-\u009f]/g;
+const permissionConflictCodes = new Set([
+  "TARGET_NOT_WRITABLE",
+  "EACCES",
+  "EPERM",
+  "EROFS"
+]);
+const pathConflictCodes = new Set([
+  "UNSAFE_REAL_PATH",
+  "TARGET_CHANGED_AFTER_PREVIEW",
+  "TARGET_CHANGED_DURING_READ"
+]);
+
+export function sanitizeTerminalText(value, fallback = "") {
+  return String(value ?? fallback)
+    .replace(ansiEscapePattern, "")
+    .replace(terminalControlPattern, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
 const componentCopy = {
   server: {
     name: "后端服务",
@@ -36,8 +58,8 @@ function relativePath(result, value) {
     path.isAbsolute(normalized)
     || normalized === ".."
     || normalized.startsWith("../")
-  ) return path.basename(value);
-  return normalized;
+  ) return sanitizeTerminalText(path.basename(value));
+  return sanitizeTerminalText(normalized);
 }
 
 function candidatesOf(result) {
@@ -149,27 +171,63 @@ function plannedLines(result) {
 
 function conflictLines(result) {
   const conflicts = fileLines(result, reportOf(result).conflicts);
+  const code = result?.code ?? result?.failed?.code;
+  let summary;
+  let action;
+  if (code === "INVALID_MANIFEST") {
+    summary = "项目里的治理配置文件内容有误，因此已经停止。";
+    action = "下一步：先备份并修正 governance-kit.yaml；不确定时不要删除或覆盖它，然后重新运行。";
+  } else if (permissionConflictCodes.has(code)) {
+    summary = "准备写入治理文件时发现目录或文件没有足够的读写权限，因此已经停止。";
+    action = "下一步：检查提示目录的读写权限，确认它允许当前用户写入后重新运行。";
+  } else if (pathConflictCodes.has(code)) {
+    summary = code === "UNSAFE_REAL_PATH"
+      ? "发现目标路径可能经过链接或离开项目目录，为保护文件已经停止。"
+      : "检查完成后目标文件又被其他程序修改，为避免覆盖已经停止。";
+    action = code === "UNSAFE_REAL_PATH"
+      ? "下一步：确认治理文件所在路径都是真实的项目内目录，不要使用指向其他位置的链接，然后重试。"
+      : "下一步：关闭正在修改这些文件的其他程序，确认内容无误后重新运行。";
+  } else if (code === "INIT_CONFLICT" || conflicts.length > 0) {
+    summary = "发现你已有的文件与准备添加的治理内容冲突，因此已经停止。";
+    action = "下一步：保留你自己的内容，比较并解决冲突后重新运行。";
+  } else {
+    summary = "准备治理文件时发现无法安全继续的问题，因此已经停止。";
+    action = "下一步：先检查项目目录和文件权限；需要更多线索时使用详细模式。";
+  }
   return [
-    "发现现有文件与准备添加的治理内容冲突，因此已经停止。",
+    summary,
     ...(conflicts.length > 0
       ? ["需要你先检查这些文件：", ...conflicts]
-      : ["需要你先检查项目目录和文件权限。"]),
+      : []),
     "",
     ...safetyLines(result),
     "没有修改任何文件。",
-    "下一步：保留并确认你自己的内容，解决冲突后重新运行。"
+    action
   ];
 }
 
 function needsInputLines(result) {
   const components = componentLines(result);
+  const code = result?.code ?? result?.questions?.[0]?.code;
+  let summary = "已经找到项目，但有一处信息无法安全判断，需要你确认。";
+  let action = "下一步：根据屏幕上的中文提示选择；不确定时可以取消。";
+  if (code === "INVALID_ANSWER") {
+    summary = "刚才的输入不是有效序号，因此没有采用任何选择。";
+    action = "下一步：重新选择屏幕列出的有效序号；不确定时输入 0 取消。";
+  } else if (code === "PROMPT_PAGE_LIMIT") {
+    summary = "需要确认的信息较多，超过了本次最多三个页面的安全限制。";
+    action = "下一步：使用详细模式查看待确认内容，先明确项目目录关系后再重新运行；本工具不会替你猜。";
+  } else if (code === "UNSUPPORTED_QUESTION") {
+    summary = "识别过程中遇到当前版本还不能处理的问题，已经安全停止。";
+    action = "下一步：使用详细模式保存诊断信息并反馈问题；不要随意选择或修改现有文件。";
+  }
   return [
-    "已经找到项目，但有一处信息无法安全判断，需要你确认。",
+    summary,
     ...(components.length > 0 ? ["", "目前发现：", ...components] : []),
     "",
     ...safetyLines(result),
     "现在不会修改任何文件。",
-    "下一步：根据屏幕上的中文提示选择；不确定时可以取消。"
+    action
   ];
 }
 
@@ -195,8 +253,13 @@ function appliedLines(result) {
 }
 
 function failedValidationLines(result) {
+  const written = fileLines(
+    result,
+    (result?.written ?? []).map((item) => ({ path: item }))
+  );
   return [
     "治理文件已经写入，但最后的完整检查没有通过。",
+    ...(written.length > 0 ? ["已经写入：", ...written] : []),
     ...safetyLines(result),
     "下一步：请保留当前文件，使用详细模式查看原因，修复后重新检查。"
   ];
@@ -220,11 +283,19 @@ function partialFailureLines(result) {
 
 function interruptedLines(result) {
   const wrote = (result?.written ?? []).length > 0;
+  const written = fileLines(
+    result,
+    (result?.written ?? []).map((item) => ({ path: item }))
+  );
+  const safeToRerun = result?.recovery?.safeToRerun === true;
   return [
     `操作已中断，${wrote ? "中断前已有部分治理文件写入。" : "没有修改任何文件。"}`,
+    ...(written.length > 0 ? ["已经写入：", ...written] : []),
     ...safetyLines(result),
-    wrote
-      ? "下一步：请先查看已经写入的文件，再按提示重新运行。"
+    wrote && safeToRerun
+      ? "下一步：已写入内容仍与本次计划一致，可以直接重新运行初始化。"
+      : wrote
+        ? "下一步：请先检查已经写入的文件，确认没有混入其他修改后再重新运行。"
       : "下一步：需要时可以重新运行初始化。"
   ];
 }
@@ -272,16 +343,18 @@ function diagnosticLines(result) {
   const lines = [
     "",
     "详细诊断：",
-    `- workspace: ${result?.workspace ?? ""}`,
-    `- status: ${result?.status ?? ""}`,
-    `- code: ${result?.code ?? "(none)"}`
+    `- workspace: ${sanitizeTerminalText(result?.workspace)}`,
+    `- status: ${sanitizeTerminalText(result?.status)}`,
+    `- code: ${sanitizeTerminalText(result?.code, "(none)")}`
   ];
   for (const candidate of candidates) {
     lines.push(
-      `- component=${candidate.component}; Profile=${candidate.profile}; confidence=${candidate.confidence ?? "(unknown)"}; path=${candidate.path ?? "."}`
+      `- component=${sanitizeTerminalText(candidate.component)}; Profile=${sanitizeTerminalText(candidate.profile)}; confidence=${sanitizeTerminalText(candidate.confidence, "(unknown)")}; path=${sanitizeTerminalText(candidate.path, ".")}`
     );
     if ((candidate.evidence ?? []).length > 0) {
-      lines.push(`  evidence: ${candidate.evidence.join(", ")}`);
+      lines.push(
+        `  evidence: ${candidate.evidence.map((item) => sanitizeTerminalText(item)).join(", ")}`
+      );
     }
   }
   const warnings = [
@@ -290,18 +363,20 @@ function diagnosticLines(result) {
   ];
   for (const warning of warnings) {
     lines.push(
-      `- warning=${warning.code ?? "(unknown)"}; path=${warning.path ?? "(none)"}`
+      `- warning=${sanitizeTerminalText(warning.code, "(unknown)")}; path=${sanitizeTerminalText(warning.path, "(none)")}`
     );
-    if (warning.targetPath) lines.push(`  targetPath=${warning.targetPath}`);
+    if (warning.targetPath) {
+      lines.push(`  targetPath=${sanitizeTerminalText(warning.targetPath)}`);
+    }
   }
   for (const conflict of report.conflicts ?? []) {
     lines.push(
-      `- conflict=${conflict.code ?? "(unknown)"}; path=${conflict.path ?? "(none)"}`
+      `- conflict=${sanitizeTerminalText(conflict.code, "(unknown)")}; path=${sanitizeTerminalText(conflict.path, "(none)")}`
     );
   }
   if (result?.failed) {
     lines.push(
-      `- failed=${result.failed.code ?? "(unknown)"}: ${result.failed.message ?? ""}`
+      `- failed=${sanitizeTerminalText(result.failed.code, "(unknown)")}: ${sanitizeTerminalText(result.failed.message)}`
     );
   }
   return lines;

@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import { GovernanceError } from "./errors.mjs";
+import { sanitizeTerminalText } from "./init-presenter.mjs";
 
 const confirmationCodes = new Set([
   "PROFILE_ASSUMPTION_UNCONFIRMED",
@@ -22,9 +23,11 @@ function eofError() {
 }
 
 function renderQuestion(question) {
-  const lines = [question.message];
+  const lines = [sanitizeTerminalText(question.message)];
   for (const [index, option] of (question.options ?? []).entries()) {
-    lines.push(`${index + 1}. ${option.label}：${option.impact}`);
+    lines.push(
+      `${index + 1}. ${sanitizeTerminalText(option.label)}：${sanitizeTerminalText(option.impact)}`
+    );
   }
   lines.push("请输入序号（输入 0 取消）：");
   return `${lines.join("\n")} `;
@@ -99,7 +102,7 @@ export function createPromptSession({
       return ask(renderQuestion(question));
     },
     async confirm(message = "是否继续？输入 y 继续，直接回车或输入其他内容取消：(y/N) ") {
-      const answer = await ask(message);
+      const answer = await ask(`${sanitizeTerminalText(message)} `);
       return /^y(?:es)?$/i.test(answer.trim());
     },
     close() {
@@ -120,7 +123,7 @@ function confirmationText(question) {
     case "PROFILE_EVIDENCE_MISMATCH":
       return `- ${componentName}与现有配置不完全一致。继续会沿用现有配置，只添加对应的治理文件。`;
     case "ADMIN_ROLE_UNCLEAR":
-      return `- ${question.path ?? componentName} 可能是管理员使用的后台。继续会把它当作管理后台添加治理说明。`;
+      return `- ${sanitizeTerminalText(question.path, componentName)} 可能是管理员使用的后台。继续会把它当作管理后台添加治理说明。`;
     default:
       return `- 请确认 ${componentName} 的识别结果。`;
   }
@@ -134,7 +137,7 @@ function componentChoice(question) {
     message: `检测到多个可能的${componentName}，请选择正确目录。这个选择只决定治理文件放在哪个目录，不会移动或修改业务代码。`,
     options: (question.candidates ?? []).map((candidate) => ({
       value: candidate.path,
-      label: candidate.path,
+      label: sanitizeTerminalText(candidate.path),
       impact: "选择后只在这个目录准备治理文件"
     }))
   };

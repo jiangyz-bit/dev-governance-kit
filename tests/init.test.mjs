@@ -1519,3 +1519,162 @@ test("prompt session maps Ctrl+C to INTERRUPTED", async () => {
   );
   session.close();
 });
+
+for (const [code, phrase] of [
+  ["INVALID_MANIFEST", "配置文件内容有误"],
+  ["INIT_CONFLICT", "保留你自己的内容"],
+  ["TARGET_NOT_WRITABLE", "读写权限"],
+  ["UNSAFE_REAL_PATH", "路径"],
+  ["TARGET_CHANGED_AFTER_PREVIEW", "其他程序"]
+]) {
+  test(`novice conflict output gives reason-specific action for ${code}`, () => {
+    const output = formatInitHuman(noviceResult("conflict", { code }));
+    assert.match(output, new RegExp(phrase));
+    assert.doesNotMatch(output, new RegExp(code));
+    assert.match(output, /下一步/);
+  });
+}
+
+for (const [code, phrase] of [
+  ["INVALID_ANSWER", "有效序号"],
+  ["PROMPT_PAGE_LIMIT", "需要确认的信息较多"],
+  ["UNSUPPORTED_QUESTION", "当前版本还不能处理"]
+]) {
+  test(`novice needs-input output gives reason-specific action for ${code}`, () => {
+    const output = formatInitHuman(noviceResult("needs_input", { code }));
+    assert.match(output, new RegExp(phrase));
+    assert.doesNotMatch(output, new RegExp(code));
+    if (code !== "INVALID_ANSWER") {
+      assert.doesNotMatch(output, /根据屏幕上的中文提示选择/);
+    }
+  });
+}
+
+test("terminal display boundary neutralizes path newlines ANSI and controls", () => {
+  const result = noviceResult("planned");
+  result.report.created = [{
+    path: path.join(
+      result.workspace,
+      "apps",
+      "server\n伪造下一步\u001b[31m\u0000.txt"
+    ),
+    code: "CREATE_FILE"
+  }];
+
+  const output = formatInitHuman(result);
+
+  assert.doesNotMatch(output, /\n伪造下一步/);
+  assert.doesNotMatch(output, /[\u001b\u0000]/);
+  assert.match(output, /server 伪造下一步/);
+  assert.doesNotMatch(output, /C:[\\/]/i);
+});
+
+test("prompt display boundary neutralizes question option and confirmation controls", async () => {
+  const choicePrompt = scriptedPrompt(["1"]);
+  const chosen = await collectInitAnswers({
+    plan: {
+      status: "needs_input",
+      questions: [{
+        code: "ADMIN_COMPONENT_UNCLEAR",
+        component: "admin",
+        candidates: [{
+          path: "apps/admin\n伪造选项\u001b[31m\u0085",
+          profile: "react-admin"
+        }]
+      }]
+    },
+    promptSession: choicePrompt
+  });
+  const renderedOption = choicePrompt.calls[0].question.options[0];
+
+  assert.equal(chosen.status, "answered");
+  assert.doesNotMatch(renderedOption.label, /[\r\n\u001b\u0085]/);
+  assert.match(renderedOption.label, /apps\/admin 伪造选项/);
+  assert.equal(
+    chosen.answers.components.admin.path,
+    "apps/admin\n伪造选项\u001b[31m\u0085"
+  );
+
+  const confirmPrompt = scriptedPrompt(["y"]);
+  await collectInitAnswers({
+    plan: {
+      status: "needs_input",
+      questions: [{
+        code: "ADMIN_ROLE_UNCLEAR",
+        component: "admin",
+        path: "apps/admin\r\n伪造确认\u001b[2J"
+      }]
+    },
+    promptSession: confirmPrompt
+  });
+  assert.doesNotMatch(
+    confirmPrompt.calls[0].message,
+    /[\r\u001b]|\n伪造确认/
+  );
+});
+
+test("real prompt renderer sanitizes dynamic message label and impact fields", async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  output.setEncoding("utf8");
+  let displayed = "";
+  output.on("data", (chunk) => {
+    displayed += chunk;
+  });
+  const session = createPromptSession({ input, output });
+  const pending = session.choose({
+    message: "选择目录\n伪造标题\u001b[2J",
+    options: [{
+      label: "apps/admin\r\n伪造选项\u0000",
+      impact: "只添加治理文件\u0085伪造影响"
+    }]
+  });
+  input.write("1\n");
+  const answer = await pending;
+  session.close();
+
+  assert.equal(answer, "1");
+  assert.doesNotMatch(displayed, /[\r\u001b\u0000\u0085]/);
+  assert.doesNotMatch(displayed, /\n伪造标题|\n伪造选项|\n伪造影响/);
+  assert.match(displayed, /选择目录 伪造标题/);
+  assert.match(displayed, /apps\/admin 伪造选项/);
+  assert.match(displayed, /只添加治理文件 伪造影响/);
+});
+
+test("failed validation lists actual written relative paths", () => {
+  const result = noviceResult("failed_validation", {
+    written: [
+      path.join(path.resolve("C:/demo/新 项目"), "governance-kit.yaml"),
+      path.join(path.resolve("C:/demo/新 项目"), "apps/server/AGENTS.md")
+    ]
+  });
+
+  const output = formatInitHuman(result);
+
+  assert.match(output, /已经写入：/);
+  assert.match(output, /governance-kit\.yaml/);
+  assert.match(output, /apps\/server\/AGENTS\.md/);
+  assert.doesNotMatch(output, /C:[\\/]/i);
+});
+
+for (const [safeToRerun, phrase] of [
+  [true, "可以直接重新运行"],
+  [false, "先检查已经写入的文件"]
+]) {
+  test(`interrupted after writes uses recovery evidence (${safeToRerun})`, () => {
+    const result = noviceResult("interrupted", {
+      written: [
+        path.join(path.resolve("C:/demo/新 项目"), "governance-kit.yaml")
+      ],
+      recovery: { safeToRerun },
+      code: "INTERRUPTED"
+    });
+
+    const output = formatInitHuman(result);
+
+    assert.match(output, /已经写入：/);
+    assert.match(output, /governance-kit\.yaml/);
+    assert.match(output, new RegExp(phrase));
+    assert.doesNotMatch(output, /INTERRUPTED|C:[\\/]/i);
+  });
+}
