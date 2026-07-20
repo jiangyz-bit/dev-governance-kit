@@ -19,6 +19,25 @@ const defaultKitRoot = path.resolve(
   ".."
 );
 
+const infrastructureErrors = new WeakSet();
+
+function markInfrastructureError(error) {
+  if (
+    (typeof error === "object" && error !== null)
+    || typeof error === "function"
+  ) {
+    infrastructureErrors.add(error);
+  }
+  return error;
+}
+
+export function isValidationInfrastructureError(error) {
+  return (
+    (typeof error === "object" && error !== null)
+    || typeof error === "function"
+  ) && infrastructureErrors.has(error);
+}
+
 function interruptedError() {
   return new GovernanceError("INTERRUPTED", "工作区验证已中断");
 }
@@ -138,7 +157,12 @@ export async function validateWorkspace({
     throw error;
   }
 
-  const catalog = await loadCatalog(path.resolve(kitRoot));
+  let catalog;
+  try {
+    catalog = await loadCatalog(path.resolve(kitRoot));
+  } catch (error) {
+    throw markInfrastructureError(error);
+  }
   throwIfAborted(signal);
 
   let context;
@@ -160,7 +184,12 @@ export async function validateWorkspace({
     throw error;
   }
 
-  const plan = await buildApplyPlan(context);
+  let plan;
+  try {
+    plan = await buildApplyPlan(context);
+  } catch (error) {
+    throw markInfrastructureError(error);
+  }
   throwIfAborted(signal);
 
   for (const operation of plan.operations) {

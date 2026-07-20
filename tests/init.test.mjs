@@ -1002,6 +1002,101 @@ test("validation interruption after writes reports exact recovery state", async 
   assert.equal(result.recovery.safeToRerun, true);
 });
 
+test("validation workspace EACCES after writes returns exact partial failure recovery", async (t) => {
+  const workspaceDir = await createSupportedWorkspace(t);
+  const plan = await planInitialization({ workspaceDir, kitRoot });
+  const validationPath = path.join(workspaceDir, "validation-target");
+
+  const result = await executeInitialization(plan, {
+    validate: async () => {
+      throw fileSystemError("EACCES", validationPath);
+    }
+  });
+
+  assert.equal(result.status, "partial_failure");
+  assert.equal(result.code, "EACCES");
+  assert.equal(result.applied, true);
+  assert.deepEqual(
+    [...result.written].sort(),
+    [...plan.writableTargets].sort()
+  );
+  assert.equal(result.recovery.safeToRerun, true);
+});
+
+test("validation business GovernanceError after writes returns partial failure", async (t) => {
+  const workspaceDir = await createSupportedWorkspace(t);
+  const plan = await planInitialization({ workspaceDir, kitRoot });
+
+  const result = await executeInitialization(plan, {
+    validate: async () => {
+      throw new GovernanceError(
+        "WORKSPACE_VALIDATION_FAILED",
+        "工作区验证失败"
+      );
+    }
+  });
+
+  assert.equal(result.status, "partial_failure");
+  assert.equal(result.code, "WORKSPACE_VALIDATION_FAILED");
+  assert.deepEqual(
+    [...result.written].sort(),
+    [...plan.writableTargets].sort()
+  );
+  assert.equal(result.recovery.safeToRerun, true);
+});
+
+test("concurrent invalid Manifest YAML during validation returns unsafe partial failure", async (t) => {
+  const workspaceDir = await createSupportedWorkspace(t);
+  const plan = await planInitialization({ workspaceDir, kitRoot });
+
+  const result = await executeInitialization(plan, {
+    validate: async (options) => {
+      await writeFile(
+        path.join(workspaceDir, "governance-kit.yaml"),
+        "schemaVersion: [",
+        "utf8"
+      );
+      return validateWorkspace(options);
+    }
+  });
+
+  assert.equal(result.status, "partial_failure");
+  assert.equal(result.code, "BAD_INDENT");
+  assert.deepEqual(
+    [...result.written].sort(),
+    [...plan.writableTargets].sort()
+  );
+  assert.equal(result.recovery.safeToRerun, false);
+});
+
+test("validation workspace failure without actual writes remains a conflict", async (t) => {
+  const workspaceDir = await createSupportedWorkspace(t);
+  const first = await initializeGovernance({
+    workspaceDir,
+    kitRoot,
+    yes: true
+  });
+  assert.equal(first.status, "applied");
+  const plan = await planInitialization({ workspaceDir, kitRoot });
+  assert.deepEqual(plan.writableTargets, []);
+  const before = await snapshotWorkspace(workspaceDir);
+
+  const result = await executeInitialization(plan, {
+    validate: async () => {
+      throw fileSystemError(
+        "EPERM",
+        path.join(workspaceDir, "validation-target")
+      );
+    }
+  });
+
+  assert.equal(result.status, "conflict");
+  assert.equal(result.code, "EPERM");
+  assert.deepEqual(result.written, []);
+  assert.equal("recovery" in result, false);
+  assert.deepEqual(await snapshotWorkspace(workspaceDir), before);
+});
+
 test("execution preflight receives the same signal and interrupts before writing", async (t) => {
   const workspaceDir = await createSupportedWorkspace(t);
   const plan = await planInitialization({ workspaceDir, kitRoot });

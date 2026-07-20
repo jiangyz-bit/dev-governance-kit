@@ -32,7 +32,10 @@ import {
   detectWorkspace,
   validateContextEvidence
 } from "./project-detect.mjs";
-import { validateWorkspace } from "./validate.mjs";
+import {
+  isValidationInfrastructureError,
+  validateWorkspace
+} from "./validate.mjs";
 import { scanWorkspace } from "./workspace-scan.mjs";
 
 const defaultKitRoot = path.resolve(
@@ -128,6 +131,11 @@ function isExpectedWorkspaceError(error, workspaceDir) {
 }
 
 function isManifestInputError(error, workspaceDir) {
+  return isExpectedWorkspaceError(error, workspaceDir)
+    || /^YAML/i.test(error?.name ?? "");
+}
+
+function isExpectedValidationError(error, workspaceDir) {
   return isExpectedWorkspaceError(error, workspaceDir)
     || /^YAML/i.test(error?.name ?? "");
 }
@@ -812,7 +820,8 @@ export async function executeInitialization(plan, {
   if (plan.report.conflicts.length > 0) return conflictResult(plan);
 
   const written = [];
-  let writePhaseStarted = false;
+  let writeOutcomeUncertain = false;
+  let validationError = false;
   try {
     throwIfAborted(signal);
     await preflightTargets(plan.writableTargets, { signal });
@@ -832,22 +841,24 @@ export async function executeInitialization(plan, {
       plan.manifestChange.category === "created"
       || plan.manifestChange.category === "updated"
     ) {
-      writePhaseStarted = true;
+      writeOutcomeUncertain = true;
       await writeFile(plan.manifestPath, plan.manifestContent, {
         expectedSnapshot: plan.manifestChange.snapshot,
         rootDir: plan.workspaceDir,
         signal
       });
       appendWritten(written, [plan.manifestPath]);
+      writeOutcomeUncertain = false;
     }
 
     throwIfAborted(signal);
-    writePhaseStarted = true;
+    writeOutcomeUncertain = true;
     const applied = await executePreview(plan.applyPreview, {
       allowConflicts: false,
       signal
     });
     appendWritten(written, applied.written);
+    writeOutcomeUncertain = false;
     throwIfAborted(signal);
     let validation;
     try {
@@ -857,8 +868,8 @@ export async function executeInitialization(plan, {
         signal
       });
     } catch (error) {
-      if (isInterrupted(error, signal)) throw error;
-      throw new InfrastructureFailure(error);
+      validationError = true;
+      throw error;
     }
     throwIfAborted(signal, "用户在验证阶段中断");
     return validation.valid
@@ -866,17 +877,22 @@ export async function executeInitialization(plan, {
       : failedValidationResult(plan, validation, written);
   } catch (error) {
     if (error instanceof InfrastructureFailure) throw error.cause;
+    if (isValidationInfrastructureError(error)) throw error;
     if (
       !isInterrupted(error, signal)
       && (
         isKitResourceFileSystemError(error, plan.kitRoot)
-        || !isExpectedWorkspaceError(error, plan.workspaceDir)
+        || (
+          validationError
+            ? !isExpectedValidationError(error, plan.workspaceDir)
+            : !isExpectedWorkspaceError(error, plan.workspaceDir)
+        )
       )
     ) {
       throw error;
     }
     appendWritten(written, error?.details?.written);
-    if (writePhaseStarted) {
+    if (writeOutcomeUncertain) {
       await appendCommittedWrites(plan, written);
     }
     const failed = normalizeExecutionError(error, signal);
