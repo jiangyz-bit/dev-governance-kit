@@ -15,12 +15,20 @@ test("dry-run reports files without writing them", async (t) => {
 test("does not overwrite a user-owned AGENTS.md", async (t) => {
   const workspace = await createFixtureWorkspace(t, "multi-repo");
   const target = path.join(workspace, "demo-server", "AGENTS.md");
+  const nonConflictingTarget = path.join(
+    workspace,
+    "demo-server",
+    "docs",
+    "API_RULES.md"
+  );
   await writeFile(target, "# 用户规则\n", "utf8");
   const report = await applyGovernance({ workspaceDir: workspace });
   assert.ok(report.conflicts.some((entry) =>
     entry.path === target && entry.code === "USER_FILE_CONFLICT"
   ));
+  assert.ok(report.created.some((entry) => entry.path === nonConflictingTarget));
   assert.equal(await readFile(target, "utf8"), "# 用户规则\n");
+  assert.notEqual(await readFile(nonConflictingTarget, "utf8"), "");
 });
 
 test("a second unchanged apply is idempotent", async (t) => {
