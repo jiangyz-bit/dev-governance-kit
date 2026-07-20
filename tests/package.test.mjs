@@ -233,6 +233,16 @@ test("MacBook release guide preserves the verified-artifact safety boundary", as
   assert.match(guide, /Node\.js.*20\.3/);
   assert.match(guide, /gh run download "\$RUN_ID"/);
   assert.match(guide, /release-evidence\.mjs" verify/);
+  assert.match(guide, /--expected-commit "\$VERIFIED_COMMIT"/);
+  assert.match(guide, /--expected-version "\$VERSION"/);
+  assert.doesNotMatch(
+    guide,
+    /release-evidence\.mjs" verify[\s\S]*?--commit "\$VERIFIED_COMMIT"/
+  );
+  assert.doesNotMatch(
+    guide,
+    /release-evidence\.mjs" verify[\s\S]*?--version "\$VERSION"/
+  );
   assert.ok(
     guide.indexOf("release-evidence.mjs\" verify")
       < guide.indexOf("npm install"),
@@ -245,6 +255,14 @@ test("MacBook release guide preserves the verified-artifact safety boundary", as
   assert.match(guide, /dry-run[\s\S]*快照[\s\S]*不变/);
   assert.match(guide, /默认.*交互[\s\S]*输入 `N`[\s\S]*零修改/);
   assert.match(guide, /status.*applied/);
+  assert.match(
+    guide,
+    /value\.command !== "validate"[\s\S]*value\.ok !== true[\s\S]*value\.report\?\.valid !== true/
+  );
+  assert.doesNotMatch(
+    guide,
+    /value\.status !== "valid" \|\| value\.valid !== true/
+  );
   assert.match(guide, /created.*0[\s\S]*updated.*0/);
   assert.match(guide, /runtime\.packageRoot/);
   assert.match(guide, /SIGINT[\s\S]*130/);

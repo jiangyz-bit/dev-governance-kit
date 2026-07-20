@@ -174,8 +174,8 @@ REPO_ROOT="$(cd "$SOURCE_ROOT" && pwd -P)"
 run_ok evidence-verify node "$REPO_ROOT/tooling/release-evidence.mjs" verify \
   --evidence "$EVIDENCE" \
   --tarball "$TARBALL" \
-  --commit "$VERIFIED_COMMIT" \
-  --version "$VERSION"
+  --expected-commit "$VERIFIED_COMMIT" \
+  --expected-version "$VERSION"
 
 # 此后所有 dev-governance-kit CLI/runtime 都来自 consumer 安装的同一 tgz。
 CONSUMER_ROOT="$SESSION_ROOT/consumer"
@@ -276,7 +276,11 @@ run_ok validate npx --no-install dev-governance-kit validate \
 run_ok validate-assert node -e '
   const fs = require("fs");
   const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-  if (value.status !== "valid" || value.valid !== true) process.exit(1);
+  if (
+    value.command !== "validate"
+    || value.ok !== true
+    || value.report?.valid !== true
+  ) process.exit(1);
 ' "$EVIDENCE_ROOT/validate.stdout"
 
 run_ok init-second npx --no-install dev-governance-kit init \
