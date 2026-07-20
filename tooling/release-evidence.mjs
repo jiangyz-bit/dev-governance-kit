@@ -52,10 +52,7 @@ function limitUtf8(source, maximumBytes) {
 
 function sanitizeFailure(source, sensitivePaths) {
   let output = String(source ?? "未知错误")
-    .replaceAll("\0", "")
-    .replace(/\r\n?/g, "\n")
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
   const paths = [...new Set(sensitivePaths.filter(Boolean).map((value) => (
     path.resolve(String(value))
   )))].sort((left, right) => right.length - left.length);
@@ -71,7 +68,8 @@ function sanitizeFailure(source, sensitivePaths) {
     .replace(/file:\/\/\/[^\s)"']+/gi, "<已隐藏路径>")
     .replace(/(?:[A-Za-z]:[\\/]|\\\\)[^ \t\r\n)"'<>]*/g, "<已隐藏路径>")
     .replace(/(^|[\s("'=])\/[^ \t\r\n)"'<>]+/g, "$1<已隐藏路径>")
-    .replace(/\s*\n\s*/g, " ")
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+    .replace(/\s+/gu, " ")
     .trim();
   return limitUtf8(output || "未知错误", maximumFailureBytes);
 }

@@ -592,3 +592,50 @@ test("CLI filesystem failures redact every private path and stay bounded", async
     assert.ok(Buffer.byteLength(result.stderr, "utf8") <= 1024);
   }
 });
+
+test("CLI tar diagnostics cannot inject tabs or C0/C1 controls", async (t) => {
+  const badPath = "bad\tname";
+  const packageJson = Buffer.from(
+    '{"name":"dev-governance-kit","version":"0.1.1"}\n'
+  );
+  const current = await fixture(t, {
+    entries: [
+      ["package.json", packageJson],
+      [badPath, Buffer.from("first")],
+      [badPath, Buffer.from("second")]
+    ],
+    packFiles: [{ path: "package.json" }]
+  });
+
+  const result = await runCli([
+    "create",
+    "--commit",
+    commit,
+    "--pack-json",
+    current.packJson,
+    "--directory",
+    current.directory,
+    "--output",
+    current.output
+  ]);
+  assert.equal(result.code, 1);
+  assert.equal(result.stdout, "");
+  assert.match(
+    result.stderr,
+    /^RELEASE_EVIDENCE_FAILED: create: tarball 包含重复条目：bad name\n$/
+  );
+  assert.doesNotMatch(
+    result.stderr.slice(0, -1),
+    /[\u0000-\u001f\u007f-\u009f]/
+  );
+  assert.ok(Buffer.byteLength(result.stderr, "utf8") <= 1024);
+
+  const c1 = await runCli(["create", "--bad\u0085option", "value"]);
+  assert.equal(c1.code, 1);
+  assert.equal(c1.stdout, "");
+  assert.match(c1.stderr, /RELEASE_EVIDENCE_FAILED: create: 未知参数：--bad option/);
+  assert.doesNotMatch(
+    c1.stderr.slice(0, -1),
+    /[\u0000-\u001f\u007f-\u009f]/
+  );
+});
