@@ -15,9 +15,27 @@ const defaultKitRoot = path.resolve(
   ".."
 );
 
-async function readExisting(filePath) {
+function interruptedError() {
+  return new GovernanceError("INTERRUPTED", "工作区验证已中断");
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw interruptedError();
+}
+
+function isInterrupted(error, signal) {
+  return signal?.aborted
+    || error?.code === "INTERRUPTED"
+    || error?.code === "ABORT_ERR"
+    || error?.name === "AbortError";
+}
+
+async function readExisting(filePath, signal) {
+  throwIfAborted(signal);
   try {
-    return await readFile(filePath, "utf8");
+    const content = await readFile(filePath, "utf8");
+    throwIfAborted(signal);
+    return content;
   } catch (error) {
     if (error.code === "ENOENT") {
       return undefined;
@@ -26,30 +44,37 @@ async function readExisting(filePath) {
   }
 }
 
-async function listMarkdown(rootDir, relativeDir = "") {
+async function listMarkdown(rootDir, relativeDir = "", signal) {
+  throwIfAborted(signal);
   const absoluteDir = path.join(rootDir, relativeDir);
   const entries = (await readdir(absoluteDir, { withFileTypes: true }))
     .sort((left, right) => left.name.localeCompare(right.name));
+  throwIfAborted(signal);
   const results = [];
   for (const entry of entries) {
+    throwIfAborted(signal);
     const relativePath = path.join(relativeDir, entry.name);
     if (entry.isDirectory()) {
-      results.push(...await listMarkdown(rootDir, relativePath));
+      results.push(...await listMarkdown(rootDir, relativePath, signal));
     } else if (entry.isFile() && entry.name.endsWith(".md")) {
+      const content = await readFile(path.join(rootDir, relativePath), "utf8");
+      throwIfAborted(signal);
       results.push({
         path: path.join(rootDir, relativePath),
-        content: await readFile(path.join(rootDir, relativePath), "utf8")
+        content
       });
     }
   }
   return results;
 }
 
-export function validateRuleIds(entries) {
+export function validateRuleIds(entries, { signal } = {}) {
   const declarations = new Map();
   const pattern = /<!--\s*rule-id:\s*([A-Z0-9-]+)\s*-->/g;
   for (const entry of entries) {
+    throwIfAborted(signal);
     for (const match of entry.content.matchAll(pattern)) {
+      throwIfAborted(signal);
       const id = match[1];
       if (declarations.has(id)) {
         throw new GovernanceError("DUPLICATE_RULE_ID", `规则 ID 重复：${id}`, {
@@ -81,8 +106,10 @@ function sortDiagnostics(values) {
 
 export async function validateWorkspace({
   workspaceDir,
-  kitRoot = defaultKitRoot
+  kitRoot = defaultKitRoot,
+  signal
 }) {
+  throwIfAborted(signal);
   const report = {
     valid: false,
     checks: [],
@@ -93,9 +120,12 @@ export async function validateWorkspace({
   let context;
   let plan;
   try {
-    context = await loadProjectManifest(workspaceDir, kitRoot);
+    context = await loadProjectManifest(workspaceDir, kitRoot, { signal });
+    throwIfAborted(signal);
     plan = await buildApplyPlan(context);
+    throwIfAborted(signal);
   } catch (error) {
+    if (isInterrupted(error, signal)) throw interruptedError();
     if (error instanceof GovernanceError) {
       report.errors.push(error.toJSON());
       return report;
@@ -104,7 +134,8 @@ export async function validateWorkspace({
   }
 
   for (const operation of plan.operations) {
-    const existing = await readExisting(operation.targetPath);
+    throwIfAborted(signal);
+    const existing = await readExisting(operation.targetPath, signal);
     if (existing === undefined) {
       report.errors.push({
         code: "MISSING_GENERATED_FILE",
@@ -124,12 +155,19 @@ export async function validateWorkspace({
 
   const ruleEntries = [];
   for (const relativeRoot of ["core", "templates", "profiles"]) {
-    ruleEntries.push(...await listMarkdown(path.join(context.kitRoot, relativeRoot)));
+    throwIfAborted(signal);
+    ruleEntries.push(...await listMarkdown(
+      path.join(context.kitRoot, relativeRoot),
+      "",
+      signal
+    ));
   }
   try {
-    const ruleCount = validateRuleIds(ruleEntries);
+    throwIfAborted(signal);
+    const ruleCount = validateRuleIds(ruleEntries, { signal });
     report.checks.push({ code: "RULE_IDS_VALID", count: ruleCount });
   } catch (error) {
+    if (isInterrupted(error, signal)) throw interruptedError();
     if (error instanceof GovernanceError) {
       report.errors.push(error.toJSON());
     } else {
@@ -139,12 +177,15 @@ export async function validateWorkspace({
 
   const server = context.components.server;
   if (server) {
+    throwIfAborted(signal);
     const sourcePath = path.join(server.rootDir, "docs", "status-enums.json");
     const registryPath = path.join(server.rootDir, "docs", "STATUS_ENUM_REGISTRY.md");
     try {
       const source = JSON.parse(await readFile(sourcePath, "utf8"));
+      throwIfAborted(signal);
       validateStatusSource(source);
-      const actual = await readExisting(registryPath);
+      throwIfAborted(signal);
+      const actual = await readExisting(registryPath, signal);
       if (actual !== undefined) {
         const expected = renderStatusRegistry(source, { remote: false });
         if (stripManagedHeader(actual) !== expected.replaceAll("\r\n", "\n")) {
@@ -158,6 +199,7 @@ export async function validateWorkspace({
         }
       }
     } catch (error) {
+      if (isInterrupted(error, signal)) throw interruptedError();
       if (error instanceof GovernanceError) {
         report.errors.push({ ...error.toJSON(), path: sourcePath });
       } else if (error instanceof SyntaxError) {
@@ -172,6 +214,7 @@ export async function validateWorkspace({
     }
   }
 
+  throwIfAborted(signal);
   sortDiagnostics(report.checks);
   sortDiagnostics(report.warnings);
   sortDiagnostics(report.errors);
