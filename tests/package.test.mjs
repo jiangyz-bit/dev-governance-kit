@@ -38,8 +38,37 @@ test("package exposes the governance CLI and supported Node version", async () =
   const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(pkg.type, "module");
   assert.equal(pkg.bin["governance-kit"], "./tooling/cli.mjs");
-  assert.equal(pkg.engines.node, ">=20");
+  assert.equal(pkg.engines.node, ">=20.3.0");
   assert.equal(pkg.scripts.test, "node --test tests/*.test.mjs");
+});
+
+test("package metadata is ready for the public npm registry", async () => {
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  assert.equal(pkg.private, undefined);
+  assert.equal(pkg.author, "coogle");
+  assert.equal(pkg.license, "MIT");
+  assert.equal(pkg.repository.url, "https://github.com/jiangyz-bit/dev-governance-kit.git");
+  assert.equal(pkg.homepage, "https://github.com/jiangyz-bit/dev-governance-kit#readme");
+  assert.equal(pkg.bugs.url, "https://github.com/jiangyz-bit/dev-governance-kit/issues");
+  assert.deepEqual(pkg.publishConfig, {
+    access: "public",
+    registry: "https://registry.npmjs.org/"
+  });
+  assert.deepEqual(pkg.bin, {
+    "dev-governance-kit": "./tooling/cli.mjs",
+    "governance-kit": "./tooling/cli.mjs"
+  });
+  assert.deepEqual(pkg.files, [
+    "blueprints/",
+    "core/",
+    "profiles/",
+    "schemas/",
+    "templates/",
+    "tooling/cli.mjs",
+    "tooling/index.mjs",
+    "tooling/lib/",
+    "docs/MANIFEST_REFERENCE.md"
+  ]);
 });
 
 test("package exports only the public initialization entry point", async () => {
@@ -76,6 +105,7 @@ test("npm package contains runtime files but excludes internal project material"
   const files = new Set(metadata[0].files.map((entry) => (
     entry.path.replaceAll("\\", "/")
   )));
+  assert.equal(files.size, 64, "发布清单变化时必须显式审查");
 
   for (const required of [
     "package.json",
@@ -156,29 +186,32 @@ test("packed CLI runs after a clean local install", async (t) => {
   });
   assert.equal(help.code, 0, help.stderr);
   assert.match(help.stdout, /governance-kit init/);
+  for (const bin of ["dev-governance-kit", "governance-kit"]) {
+    assert.equal(installedManifest.bin[bin], "./tooling/cli.mjs");
+    const smoke = await run(npmCommand, [
+      ...npmPrefix,
+      "exec",
+      "--no",
+      "--",
+      bin,
+      "--help"
+    ], { cwd: root });
+    assert.equal(smoke.code, 0, smoke.stderr);
+    assert.match(smoke.stdout, /governance-kit init/);
+  }
 });
 
-test("README documents both supported workflows", async () => {
+test("README explains npm init for novice users", async () => {
   const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
-  assert.match(readme, /governance-kit apply/);
-  assert.match(readme, /governance-kit validate/);
-  for (const heading of [
-    "## 它能解决什么问题",
-    "## 3 分钟快速开始",
-    "## 执行后会得到什么",
-    "## 已有项目是否安全",
-    "## 交给 AI Agent 使用"
-  ]) {
-    assert.match(readme, new RegExp(heading));
-  }
-  for (const legacyText of [
-    "V1",
-    "第一阶段",
-    "第二阶段",
-    "第三阶段",
-    "MIGRATION_FROM_V1_TEMPLATES"
-  ]) {
-    assert.doesNotMatch(readme, new RegExp(legacyText));
-  }
-  assert.ok(readme.split(/\r?\n/).length <= 170, "README 应保持简洁");
+  assert.match(readme, /npx dev-governance-kit init/);
+  assert.match(readme, /给已有项目接入工程治理/);
+  assert.match(readme, /create.*尚未实现/s);
+  assert.match(readme, /不会修改你的业务代码/);
+  assert.match(readme, /Windows/);
+  assert.match(readme, /macOS/);
+  assert.match(readme, /Linux/);
+  assert.match(readme, /npx --yes dev-governance-kit@0\.1\.0 init --yes --json/);
+  assert.match(readme, /https:\/\/github\.com\/jiangyz-bit\/dev-governance-kit\/blob\/main\/docs\/MANIFEST_REFERENCE\.md/);
+  assert.doesNotMatch(readme, /git clone.*3 分钟快速开始/s);
+  assert.ok(readme.split(/\r?\n/).length <= 220, "README 应保持可快速浏览");
 });

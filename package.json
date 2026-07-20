@@ -1,26 +1,48 @@
 {
   "name": "dev-governance-kit",
   "version": "0.1.0",
-  "private": true,
+  "description": "面向 AI Agent 的工程治理 CLI，为已有项目生成统一规则、技术约束与验证机制。",
+  "keywords": [
+    "ai-agent",
+    "agents-md",
+    "engineering-governance",
+    "developer-tools",
+    "cli",
+    "monorepo"
+  ],
+  "author": "coogle",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jiangyz-bit/dev-governance-kit.git"
+  },
+  "homepage": "https://github.com/jiangyz-bit/dev-governance-kit#readme",
+  "bugs": {
+    "url": "https://github.com/jiangyz-bit/dev-governance-kit/issues"
+  },
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.3.0"
   },
   "bin": {
+    "dev-governance-kit": "./tooling/cli.mjs",
     "governance-kit": "./tooling/cli.mjs"
   },
   "files": [
-    "tooling/",
-    "core/rules/",
+    "blueprints/",
+    "core/",
+    "profiles/",
     "schemas/",
     "templates/",
-    "profiles/",
-    "blueprints/",
-    "docs/MANIFEST_REFERENCE.md",
-    "README.md",
-    "LICENSE"
+    "tooling/cli.mjs",
+    "tooling/index.mjs",
+    "tooling/lib/",
+    "docs/MANIFEST_REFERENCE.md"
   ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "scripts": {
     "governance-kit": "node tooling/cli.mjs",
     "test": "node --test tests/*.test.mjs",

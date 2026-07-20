@@ -1,169 +1,142 @@
 # dev-governance-kit
 
-让 AI Agent 按统一工程规则开发项目，而不是每次从零猜测目录、状态、API、数据库和发布要求。
+给已有项目接入工程治理，让 AI Agent 开发时先读懂统一规则，再修改代码。
 
-它可以把 `AGENTS.md`、工程规则、状态注册表和验证脚本安全地接入单仓库或多仓库项目。
+它会识别项目里的 Java 后端、React 管理后台和微信小程序，生成 `AGENTS.md`、接口与数据库规则、测试说明和自动检查脚本。你不需要先理解 Profile、Schema 或仓库模式。
 
-## 它能解决什么问题
+## 我该用 `init` 还是 `create`
 
-- 给 AI Agent 一套明确、可执行的项目规则，减少随意分层和无关重构。
-- 统一后端、管理端和客户端对 API、状态、权限及数据库的理解。
-- 自动生成仓库内的治理文档和检查脚本，避免只靠口头约定。
-- 接入已有项目时先预览冲突，不直接覆盖用户文件。
-- 重复执行结果一致，并能检查占位符、配置和状态注册表是否漂移。
+| 你的情况 | 使用方式 | 当前状态 |
+|---|---|---|
+| 已经有项目，想加入 AI 开发规则 | `init` | 可用，推荐 |
+| 还没有项目，想从空目录创建完整项目 | `create` | 规划中，尚未实现 |
 
-## 3 分钟快速开始
+现在请使用 `init`。`create` 只是未来规划，本 README 不提供可执行命令。
 
-### 1. 安装
+## 3 分钟接入已有项目
 
-需要 Node.js 20 或更高版本。
+需要 Node.js 20.3 或更高版本，以及 npm。Windows、macOS、Linux 都可以使用。
 
-```powershell
+打开终端，进入你的项目最外层目录，然后执行：
+
+```text
+npx dev-governance-kit init
+```
+
+工具会先了解项目、展示准备新增或更新的文件，最后询问是否继续。直接回车等于取消；只有输入 `y` 才会写入。
+
+如果项目结构明确，通常只需要确认一次。识别不清时，工具最多用三个简单页面提问；仍不能确定就安全停止，不会猜着写。
+
+## `init` 会做什么、不会做什么
+
+会做：
+
+- 在本机读取项目结构和技术栈，不上传项目内容。
+- 先展示完整计划，再让你确认。
+- 生成 AI 开发规则、接口、数据库、测试和发布说明。
+- 写入完成后自动检查生成结果。
+- 重复运行时识别未变化内容，并保护用户自己改过的文件。
+
+不会做：
+
+- 不会修改你的业务代码。
+- 不会覆盖来源不明或由你维护的文件。
+- 不会执行 `git init`、`git commit`、`git push`。
+- 不会提交、回滚或清理 Git 工作区；未提交修改只会提示。
+- 不会安装数据库、框架或业务依赖。
+
+## 常用命令
+
+只看计划，不写文件：
+
+```text
+npx dev-governance-kit init --dry-run
+```
+
+确认计划无误后，跳过最后的人工确认并正式执行：
+
+```text
+npx dev-governance-kit init --yes
+```
+
+已有 `governance-kit.yaml` 时，`init` 默认沿用并检查它。只有想重新识别项目并预览配置差异时才使用：
+
+```text
+npx dev-governance-kit init --reconfigure
+```
+
+也可以指定其他项目目录：
+
+```text
+npx dev-governance-kit init --workspace "C:\Projects\demo"
+```
+
+macOS 和 Linux 示例：
+
+```text
+cd ~/Projects/demo
+npx dev-governance-kit init
+```
+
+## 冲突或失败怎么办
+
+发现已有用户文件、来源版本不一致或目录不安全时，`init` 会在写入前整体停止，并列出需要处理的文件。先不要删除原文件，可以让 AI Agent 比较内容并提出合并方案。
+
+如果写入过程中被中断或失败，工具会列出本次已写入的文件和恢复建议。它不会自动删除文件或执行 Git 回滚。请先保留现场，再运行：
+
+```text
+npx dev-governance-kit init --verbose
+```
+
+如果你在失败后编辑过生成文件，工具会保护这些修改并报告冲突。
+
+## 交给 AI Agent
+
+先让 Agent 只预演：
+
+```text
+npx --yes dev-governance-kit@0.1.0 init --dry-run --json
+```
+
+确认 Agent 报告的组件、文件和冲突无误后再执行：
+
+```text
+npx --yes dev-governance-kit@0.1.0 init --yes --json
+```
+
+两个 `--yes` 含义不同：
+
+- `npx --yes`：允许 npx 下载这个 npm 包，不再询问安装。
+- `init --yes`：确认已经明确且无冲突的治理计划，可以写入。
+
+`--json` 会只输出一个 JSON 文档，适合 AI Agent 或 CI 读取。JSON/非交互环境不会弹出问题；如果信息不足，会返回 `needs_input`，不会替你猜答案。
+
+可以给 AI Agent 这段任务：
+
+> 使用 dev-governance-kit 给当前已有项目接入工程治理。先运行 init --dry-run --json，只报告识别结果、计划和冲突，不写文件。确认无误后再运行 init --yes --json，随后读取各组件的 AGENTS.md，并说明验证结果与剩余风险。不要覆盖用户文件，不要提交或回滚 Git。
+
+## 当前支持
+
+| 项目部分 | 技术范围 |
+|---|---|
+| 后端服务 | Spring Boot + MyBatis |
+| 管理后台 | React + Vite + TypeScript |
+| 客户端 | 微信小程序 |
+
+支持单仓库和多个独立仓库组合。其他技术栈会明确提示暂不支持。
+
+完整配置字段见 [governance-kit.yaml 参考文档](https://github.com/jiangyz-bit/dev-governance-kit/blob/main/docs/MANIFEST_REFERENCE.md)。
+
+## 从源码参与开发
+
+下面的命令只适合维护本工具，不是普通用户的安装步骤：
+
+```text
 git clone https://github.com/jiangyz-bit/dev-governance-kit.git
 cd dev-governance-kit
-npm install
-```
-
-### 2. 描述你的项目
-
-在产品工作区根目录创建 `governance-kit.yaml`：
-
-```yaml
-schemaVersion: 1
-project:
-  name: demo
-  repositoryMode: multi-repo
-components:
-  server:
-    profile: java-springboot-mybatis
-    path: demo-server
-  admin:
-    profile: react-admin
-    path: demo-admin
-  client:
-    profile: wechat-miniprogram
-    path: demo-miniprogram
-contracts:
-  statusRegistryOwner: server
-  apiContractOwner: server
-generation:
-  conflictPolicy: report
-```
-
-对应目录：
-
-```text
-demo/
-  governance-kit.yaml
-  demo-server/
-  demo-admin/
-  demo-miniprogram/
-```
-
-### 3. 先预览，再应用
-
-```powershell
-node tooling/cli.mjs apply --workspace C:\Projects\demo --dry-run
-node tooling/cli.mjs apply --workspace C:\Projects\demo
-```
-
-### 4. 验证
-
-```powershell
-node tooling/cli.mjs validate --workspace C:\Projects\demo
-```
-
-安装或链接 package bin 后，也可以使用 `governance-kit apply` 和 `governance-kit validate`。
-
-## 执行后会得到什么
-
-每个组件会按职责获得对应文件，例如：
-
-```text
-demo-server/
-  AGENTS.md
-  docs/
-    governance/
-    API_RULES.md
-    DATABASE_RULES.md
-    LOCAL_RUNBOOK.md
-    RELEASE_CHECKLIST.md
-    status-enums.json
-    STATUS_ENUM_REGISTRY.md
-  scripts/
-
-demo-admin/
-  AGENTS.md
-  docs/
-  scripts/
-
-demo-miniprogram/
-  AGENTS.md
-  docs/
-  scripts/
-```
-
-后端负责业务事实、API 契约和状态注册表；前端和客户端使用后端定义的稳定状态 code。
-
-## 已有项目是否安全
-
-安全。工具默认使用 `report` 冲突策略：
-
-| 情况 | 处理方式 |
-|---|---|
-| 文件不存在 | 创建 |
-| 工具托管且版本一致 | 安全更新 |
-| 内容没有变化 | 跳过 |
-| 用户文件或来源不明 | 报告冲突，不覆盖 |
-| 已有 `status-enums.json` | 保留并报告，不覆盖业务状态 |
-| 来源版本不一致 | 停止更新该文件并报告 |
-
-建议始终先运行 `--dry-run`。存在冲突时，先人工确认或让 Agent 给出合并建议，再执行正式应用。
-
-## 交给 AI Agent 使用
-
-可以直接复制下面这段提示词：
-
-> 使用 dev-governance-kit 给当前项目接入工程治理。先读取 README、当前 AGENTS.md 和相关 docs，识别组件、技术栈、Git 仓库边界以及真实启动/测试命令。创建或检查 governance-kit.yaml，先执行 apply --dry-run，并向我报告将创建的文件和全部冲突。不要覆盖用户文件。确认无误后执行 apply、validate 和项目自身测试，最后说明修改内容、验证结果与剩余风险。
-
-Agent 需要把 `--workspace` 指向产品工作区，而不是本工具仓库。
-
-## 当前支持范围
-
-| 组件 | Profile |
-|---|---|
-| Java 后端 | `java-springboot-mybatis` |
-| React 管理端 | `react-admin` |
-| 微信小程序 | `wechat-miniprogram` |
-
-支持 `monorepo` 和 `multi-repo`。多仓库模式下，工作区根目录不需要是 Git 仓库，各组件可以维护独立 `.git`。
-
-## 工作原理
-
-Core 定义通用工程规则，Template 定义组件职责，Profile 提供技术栈命令和变量，Blueprint 描述推荐组合，Tooling 负责安全应用和验证。每条规则只保留一个权威来源，再生成到具体项目中。
-
-## 进阶文档
-
-- [governance-kit.yaml 字段说明](docs/MANIFEST_REFERENCE.md)
-- [组合式 AI 工程技术底座设计](docs/superpowers/specs/2026-07-18-composable-ai-engineering-foundation-design.md)
-
-## 项目开发验证
-
-```powershell
 npm ci
 npm test
-npm audit
 node tooling/cli.mjs --help
 ```
 
-## 开源许可
-
-本项目采用 [MIT License](LICENSE) 开源。在保留原始版权声明和许可声明的前提下，你可以：
-
-- 免费用于个人项目或商业项目。
-- 复制、修改、合并、发布和分发本项目。
-- 将本项目集成到其他开源或闭源产品中。
-
-本项目按“原样”提供，不附带任何明示或暗示的担保。因使用本项目产生的风险和责任由使用者自行承担。
-
-完整许可条款以仓库根目录中的 [LICENSE](LICENSE) 文件为准；以上中文内容仅用于帮助理解。
+项目采用 [MIT License](LICENSE)。你可以用于个人或商业项目，也可以修改和分发；需保留原版权与许可声明。软件按原样提供，不附带担保。
