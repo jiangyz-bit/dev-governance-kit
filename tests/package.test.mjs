@@ -215,3 +215,51 @@ test("README explains npm init for novice users", async () => {
   assert.doesNotMatch(readme, /git clone.*3 分钟快速开始/s);
   assert.ok(readme.split(/\r?\n/).length <= 220, "README 应保持可快速浏览");
 });
+
+test("MacBook release guide preserves the verified-artifact safety boundary", async () => {
+  const guide = await readFile(
+    new URL("../docs/MACOS_RELEASE_TEST.md", import.meta.url),
+    "utf8"
+  );
+  const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+
+  assert.match(guide, /RUN_ID/);
+  assert.match(guide, /VERIFIED_COMMIT/);
+  assert.match(guide, /ARTIFACT_NAME/);
+  assert.match(guide, /TARBALL_SHA/);
+  assert.match(guide, /set -euo pipefail/);
+  assert.match(guide, /for tool in gh node npm git/);
+  assert.match(guide, /uname -m.*arm64/s);
+  assert.match(guide, /Node\.js.*20\.3/);
+  assert.match(guide, /gh run download "\$RUN_ID"/);
+  assert.match(guide, /release-evidence\.mjs" verify/);
+  assert.ok(
+    guide.indexOf("release-evidence.mjs\" verify")
+      < guide.indexOf("npm install"),
+    "必须先验证发布证据，再安装候选 tarball"
+  );
+  assert.doesNotMatch(guide, /^\s*npm pack\b/m);
+  assert.match(guide, /REPO_ROOT=.*pwd/);
+  assert.match(guide, /用户 项目/);
+  assert.match(guide, /trap cleanup EXIT/);
+  assert.match(guide, /dry-run[\s\S]*快照[\s\S]*不变/);
+  assert.match(guide, /默认.*交互[\s\S]*输入 `N`[\s\S]*零修改/);
+  assert.match(guide, /status.*applied/);
+  assert.match(guide, /created.*0[\s\S]*updated.*0/);
+  assert.match(guide, /runtime\.packageRoot/);
+  assert.match(guide, /SIGINT[\s\S]*130/);
+  assert.match(guide, /目录 symlink/);
+  assert.match(guide, /文件 symlink/);
+  assert.match(guide, /Manifest symlink/);
+  assert.match(guide, /stdout/);
+  assert.match(guide, /stderr/);
+  assert.match(guide, /退出码/);
+  assert.match(guide, /任何一项失败[\s\S]*不得发布/);
+
+  const absoluteGuideUrl =
+    "https://github.com/jiangyz-bit/dev-governance-kit/blob/main/docs/MACOS_RELEASE_TEST.md";
+  assert.match(readme, new RegExp(absoluteGuideUrl.replaceAll(".", "\\.")));
+  assert.match(readme, /macOS 受支持/);
+  assert.match(readme, /MacBook M5.*尚未完成实机验收/);
+  assert.doesNotMatch(readme, /MacBook M5.*已通过/);
+});

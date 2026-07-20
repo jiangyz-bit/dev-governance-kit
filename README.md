@@ -127,6 +127,10 @@ npx --yes dev-governance-kit@0.1.0 init --yes --json
 
 完整配置字段见 [governance-kit.yaml 参考文档](https://github.com/jiangyz-bit/dev-governance-kit/blob/main/docs/MANIFEST_REFERENCE.md)。
 
+macOS 受支持；但首次发布候选版的 MacBook M5 尚未完成实机验收（验收必须复用
+同一 artifact），因此当前状态仅为待验收。发布前操作见
+[MacBook M5 发布候选版实机验收](https://github.com/jiangyz-bit/dev-governance-kit/blob/main/docs/MACOS_RELEASE_TEST.md)。
+
 ## 从源码参与开发
 
 下面的命令只适合维护本工具，不是普通用户的安装步骤：
