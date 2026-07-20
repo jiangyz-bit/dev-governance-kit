@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   normalizePublishedVersions,
   queryPublishedVersions,
+  sanitizeReleaseFailure,
   verifyRelease
 } from "../tooling/verify-release.mjs";
 
@@ -36,14 +35,13 @@ function validPackage(overrides = {}) {
   };
 }
 
-function runCli(args, env = {}) {
+function runCli(args) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [
       "tooling/verify-release.mjs",
       ...args
     ], {
       cwd: kitRoot,
-      env: { ...process.env, ...env },
       windowsHide: true
     });
     let stdout = "";
@@ -55,6 +53,30 @@ function runCli(args, env = {}) {
     child.on("error", reject);
     child.on("close", (code) => resolve({ code, stdout, stderr }));
   });
+}
+
+function registryResponse(body, {
+  status = 200,
+  url = "https://registry.npmjs.org/dev-governance-kit",
+  redirected = false,
+  contentType = "application/vnd.npm.install-v1+json",
+  headers = {}
+} = {}) {
+  const response = new Response(
+    typeof body === "string" ? body : JSON.stringify(body),
+    {
+      status,
+      headers: {
+        "content-type": contentType,
+        ...headers
+      }
+    }
+  );
+  Object.defineProperties(response, {
+    url: { value: url },
+    redirected: { value: redirected }
+  });
+  return response;
 }
 
 test("verifyRelease accepts an unpublished exact stable tag", () => {
@@ -166,77 +188,146 @@ test("normalizePublishedVersions accepts npm string, array and empty responses",
   }
 });
 
-test("queryPublishedVersions distinguishes official package E404 from failures", async () => {
+test("queryPublishedVersions directly reads the fixed public registry document", async () => {
   const calls = [];
-  const makeRunner = (result) => async (file, args, options) => {
-    calls.push({ file, args, options });
-    return result;
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    return registryResponse({
+      name: "dev-governance-kit",
+      versions: {
+        "0.2.0": {
+          name: "dev-governance-kit",
+          version: "0.2.0"
+        },
+        "0.1.0": {
+          name: "dev-governance-kit",
+          version: "0.1.0"
+        },
+        "0.3.0-beta.1": {
+          name: "dev-governance-kit",
+          version: "0.3.0-beta.1"
+        }
+      }
+    });
   };
-  const npmCliPath = path.join("C:", "npm", "npm-cli.js");
 
-  assert.deepEqual(await queryPublishedVersions({
-    npmCliPath,
-    runCommand: makeRunner({
-      code: 0,
-      stdout: '"0.1.0"\n',
-      stderr: ""
-    })
-  }), ["0.1.0"]);
-  assert.equal(calls[0].file, process.execPath);
-  assert.deepEqual(calls[0].args, [
-    npmCliPath,
-    "view",
-    "dev-governance-kit",
-    "versions",
-    "--json",
-    "--registry=https://registry.npmjs.org/"
+  assert.deepEqual(await queryPublishedVersions({ fetchImpl }), [
+    "0.1.0",
+    "0.2.0"
   ]);
-  assert.equal(calls[0].options.shell, false);
+  assert.equal(
+    calls[0].url,
+    "https://registry.npmjs.org/dev-governance-kit"
+  );
+  assert.equal(calls[0].options.redirect, "error");
+  assert.equal(calls[0].options.credentials, "omit");
+  assert.equal(calls[0].options.headers.accept.includes("json"), true);
+  assert.equal("authorization" in calls[0].options.headers, false);
+  assert.ok(calls[0].options.signal instanceof AbortSignal);
+});
 
+test("queryPublishedVersions accepts only an exact official 404", async () => {
   assert.deepEqual(await queryPublishedVersions({
-    npmCliPath,
-    runCommand: makeRunner({
-      code: 1,
-      stdout: "",
-      stderr: "npm error code E404\n404 Not Found - GET https://registry.npmjs.org/dev-governance-kit - Not found"
-    })
+    fetchImpl: async () => registryResponse(
+      { error: "Not found" },
+      { status: 404 }
+    )
   }), []);
 
-  for (const result of [
-    { code: 1, stdout: "", stderr: "npm error code E403" },
-    { code: 1, stdout: "", stderr: "npm error code E404\nhttps://registry.npmjs.org/dev-governance-kit\npermission denied" },
-    { code: 1, stdout: "", stderr: "npm error code E404\n404 Not Found - GET https://evil.invalid/dev-governance-kit" },
-    { code: 1, stdout: "", stderr: "network timeout" },
-    { code: 0, stdout: "{malformed", stderr: "" }
+  for (const response of [
+    registryResponse({ error: "permission denied" }, { status: 404 }),
+    registryResponse(
+      { error: "Not found", detail: "extra" },
+      { status: 404 }
+    ),
+    registryResponse({ error: "Not found" }, { status: 403 }),
+    registryResponse(
+      { error: "Not found" },
+      { status: 404, url: "https://evil.invalid/dev-governance-kit" }
+    ),
+    registryResponse(
+      { error: "Not found" },
+      { status: 404, redirected: true }
+    )
   ]) {
     await assert.rejects(
       queryPublishedVersions({
-        npmCliPath,
-        runCommand: makeRunner(result)
+        fetchImpl: async () => response
       }),
-      /npm registry|JSON|查询/
+      /npm registry|响应|404/
     );
   }
 });
 
-test("CLI strictly parses args and prints one stable JSON document", async (t) => {
-  const directory = await mkdtemp(path.join(tmpdir(), "verify-release-cli-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const fakeNpm = path.join(directory, "npm-cli.js");
-  await writeFile(fakeNpm, "process.stdout.write('[]\\n');\n", "utf8");
+test("queryPublishedVersions fails closed on malformed or contradictory data", async () => {
+  const cases = [
+    registryResponse("{malformed"),
+    registryResponse(null),
+    registryResponse({ name: "other", versions: {} }),
+    registryResponse({ name: "dev-governance-kit", versions: [] }),
+    registryResponse({
+      name: "dev-governance-kit",
+      versions: {
+        " 0.1.0": {
+          name: "dev-governance-kit",
+          version: " 0.1.0"
+        }
+      }
+    }),
+    registryResponse({
+      name: "dev-governance-kit",
+      versions: {
+        "0.1.0": {
+          name: "other",
+          version: "0.1.0"
+        }
+      }
+    }),
+    registryResponse({
+      name: "dev-governance-kit",
+      versions: {
+        "0.1.0": {
+          name: "dev-governance-kit",
+          version: "0.2.0"
+        }
+      }
+    }),
+    registryResponse(
+      { name: "dev-governance-kit", versions: {} },
+      { contentType: "text/html" }
+    ),
+    registryResponse(
+      { name: "dev-governance-kit", versions: {} },
+      { headers: { "content-length": "9999999" } }
+    )
+  ];
+  for (const response of cases) {
+    await assert.rejects(
+      queryPublishedVersions({ fetchImpl: async () => response }),
+      /npm registry|JSON|SemVer|version|name|过大|结构/
+    );
+  }
+  await assert.rejects(
+    queryPublishedVersions({
+      maximumResponseBytes: 32,
+      fetchImpl: async () => registryResponse({
+        name: "dev-governance-kit",
+        versions: {}
+      })
+    }),
+    /过大/
+  );
+  await assert.rejects(
+    queryPublishedVersions({
+      fetchImpl: async () => {
+        throw new Error("network failed");
+      }
+    }),
+    /network failed/
+  );
+});
 
-  const success = await runCli(["--tag", "v0.1.0"], {
-    npm_execpath: fakeNpm
-  });
-  assert.equal(success.code, 0, success.stderr);
-  assert.equal(success.stderr, "");
-  assert.deepEqual(JSON.parse(success.stdout), {
-    ok: true,
-    package: "dev-governance-kit",
-    version: "0.1.0",
-    tag: "v0.1.0"
-  });
-  assert.equal(success.stdout.trim().split(/\r?\n/).length, 1);
+test("CLI strictly rejects malformed arguments without querying the network", async () => {
 
   for (const args of [
     [],
@@ -246,7 +337,7 @@ test("CLI strictly parses args and prints one stable JSON document", async (t) =
     ["--tag", "v0.1.0", "--tag", "v0.1.0"],
     ["--tag=v0.1.0"]
   ]) {
-    const result = await runCli(args, { npm_execpath: fakeNpm });
+    const result = await runCli(args);
     assert.equal(result.code, 1);
     assert.equal(result.stdout, "");
     assert.match(result.stderr, /^RELEASE_VERIFY_FAILED:/);
@@ -254,25 +345,43 @@ test("CLI strictly parses args and prints one stable JSON document", async (t) =
   }
 });
 
-test("CLI failures redact paths and controls and stay bounded", async (t) => {
-  const directory = await mkdtemp(
-    path.join(tmpdir(), "private-secret-verify-release-")
-  );
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const fakeNpm = path.join(directory, "npm-cli.js");
-  await writeFile(fakeNpm, `
-process.stderr.write(${JSON.stringify(
-  `${directory}\nfile:///private/secret\u0001${"x".repeat(2000)}`
-)});
-process.exitCode = 1;
-`, "utf8");
-  const result = await runCli(["--tag", "v0.1.0"], {
-    npm_execpath: fakeNpm
-  });
-  assert.equal(result.code, 1);
-  assert.equal(result.stdout, "");
-  assert.match(result.stderr, /^RELEASE_VERIFY_FAILED:/);
-  assert.doesNotMatch(result.stderr, /private-secret-verify-release/i);
-  assert.doesNotMatch(result.stderr.slice(0, -1), /[\u0000-\u001f\u007f-\u009f]/);
-  assert.ok(Buffer.byteLength(result.stderr, "utf8") <= 1024);
+test("release failure diagnostics redact credentials paths and controls", () => {
+  const source = [
+    "npm registry 查询失败",
+    "npm_token=Q7z",
+    "Authorization: Bearer B8x",
+    "Authorization='Basic C9v'",
+    "https://alice:D4w@example.test/private",
+    '"_authToken":"E5u"',
+    "_auth=F6t",
+    "password: 'G7s'",
+    "token=H8r",
+    "secret: I9q",
+    "apiKey=J0p",
+    "file:///private/secret",
+    "C:\\private\\secret",
+    "\u001b[31m\u0001",
+    "x".repeat(2000)
+  ].join(" ");
+  const output = sanitizeReleaseFailure(source, []);
+
+  assert.match(output, /npm registry 查询失败/);
+  for (const secret of [
+    "Q7z",
+    "B8x",
+    "C9v",
+    "alice",
+    "D4w",
+    "E5u",
+    "F6t",
+    "G7s",
+    "H8r",
+    "I9q",
+    "J0p"
+  ]) {
+    assert.doesNotMatch(output, new RegExp(secret, "i"));
+  }
+  assert.doesNotMatch(output, /private[\\/]secret/i);
+  assert.doesNotMatch(output, /[\u0000-\u001f\u007f-\u009f]/);
+  assert.ok(Buffer.byteLength(output, "utf8") <= 904);
 });

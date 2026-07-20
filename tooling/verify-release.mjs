@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +8,7 @@ const kitRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const packagePath = path.join(kitRoot, "package.json");
 const packageName = "dev-governance-kit";
 const registry = "https://registry.npmjs.org/";
+const registryEndpoint = `${registry}${packageName}`;
 const repositoryUrl =
   "https://github.com/jiangyz-bit/dev-governance-kit.git";
 const stableVersionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -20,6 +20,8 @@ const publishedVersionPattern = new RegExp(
   + "(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
 );
 const maximumFailureBytes = 900;
+const defaultMaximumResponseBytes = 4 * 1024 * 1024;
+const registryTimeoutMilliseconds = 10_000;
 
 function assertPlainObject(value, label) {
   if (
@@ -138,109 +140,177 @@ export function verifyRelease(input) {
   };
 }
 
-function runNpmCommand(file, args, options) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(file, args, {
-      ...options,
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    let stdout = "";
-    let stderr = "";
-    let outputBytes = 0;
-    const maximumOutputBytes = 1024 * 1024;
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    const collect = (target) => (chunk) => {
-      outputBytes += Buffer.byteLength(chunk, "utf8");
-      if (outputBytes > maximumOutputBytes) {
-        child.kill();
-        return;
-      }
-      if (target === "stdout") stdout += chunk;
-      else stderr += chunk;
-    };
-    child.stdout.on("data", collect("stdout"));
-    child.stderr.on("data", collect("stderr"));
-    child.on("error", reject);
-    child.on("close", (code, signal) => {
-      if (outputBytes > maximumOutputBytes) {
-        reject(new Error("npm registry 查询输出过大"));
-        return;
-      }
-      resolve({ code, signal, stdout, stderr });
-    });
-  });
-}
-
-function isOfficialPackageNotFound(result) {
-  const output = `${result.stdout}\n${result.stderr}`;
-  return result.code !== 0
-    && /\bE404\b/.test(output)
-    && /(?:404 )?Not Found - GET https:\/\/registry\.npmjs\.org\/dev-governance-kit - Not found/i.test(output);
-}
-
-export async function queryPublishedVersions({
-  npmCliPath,
-  runCommand = runNpmCommand
-} = {}) {
-  if (
-    typeof npmCliPath !== "string"
-    || npmCliPath.length === 0
-    || path.basename(npmCliPath).toLowerCase() !== "npm-cli.js"
-  ) {
-    throw new Error("无法定位可信的 npm-cli.js");
+async function readBoundedRegistryBody(response, maximumBytes) {
+  const contentLength = response.headers.get("content-length");
+  if (contentLength !== null) {
+    if (!/^(0|[1-9]\d*)$/.test(contentLength)) {
+      throw new Error("npm registry content-length 无效");
+    }
+    if (BigInt(contentLength) > BigInt(maximumBytes)) {
+      throw new Error("npm registry 响应过大");
+    }
   }
-  const result = await runCommand(process.execPath, [
-    npmCliPath,
-    "view",
-    packageName,
-    "versions",
-    "--json",
-    `--registry=${registry}`
-  ], {
-    cwd: kitRoot,
-    shell: false,
-    env: { ...process.env }
-  });
-  if (
-    result === null
-    || typeof result !== "object"
-    || Array.isArray(result)
-    || !Number.isInteger(result.code)
-    || typeof result.stdout !== "string"
-    || typeof result.stderr !== "string"
-  ) {
-    throw new Error("npm registry 查询返回了无效执行结果");
+  if (!response.body || typeof response.body.getReader !== "function") {
+    throw new Error("npm registry 响应缺少可读取的 body");
   }
-  if (result.code !== 0) {
-    if (isOfficialPackageNotFound(result)) return [];
-    throw new Error(`npm registry 查询失败：${result.stderr || result.stdout}`);
-  }
-  let parsed;
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
   try {
-    parsed = JSON.parse(result.stdout);
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!(value instanceof Uint8Array)) {
+        throw new Error("npm registry 响应 body 类型无效");
+      }
+      total += value.byteLength;
+      if (total > maximumBytes) {
+        await reader.cancel().catch(() => {});
+        throw new Error("npm registry 响应过大");
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(
+      Buffer.concat(chunks, total)
+    );
+  } catch (error) {
+    throw new Error(`npm registry 响应不是有效 UTF-8：${error.message}`);
+  }
+}
+
+function parseRegistryJson(source) {
+  try {
+    return JSON.parse(source);
   } catch (error) {
     throw new Error(`npm registry 返回的 JSON 无效：${error.message}`);
   }
-  return normalizePublishedVersions(parsed);
 }
 
-function resolveNpmCliPath() {
-  const candidate = process.env.npm_execpath;
-  if (
-    typeof candidate === "string"
-    && path.basename(candidate).toLowerCase() === "npm-cli.js"
-  ) {
-    return path.resolve(candidate);
+function compareStableVersions(left, right) {
+  const leftParts = left.split(".").map(BigInt);
+  const rightParts = right.split(".").map(BigInt);
+  for (let index = 0; index < 3; index += 1) {
+    if (leftParts[index] < rightParts[index]) return -1;
+    if (leftParts[index] > rightParts[index]) return 1;
   }
-  return path.resolve(
-    path.dirname(process.execPath),
-    "node_modules",
-    "npm",
-    "bin",
-    "npm-cli.js"
+  return 0;
+}
+
+function versionsFromPackument(value) {
+  assertPlainObject(value, "npm registry 文档");
+  if (value.name !== packageName) {
+    throw new Error("npm registry 文档 name 不匹配");
+  }
+  assertPlainObject(value.versions, "npm registry 文档 versions");
+  const stableVersions = [];
+  for (const [version, descriptor] of Object.entries(value.versions)) {
+    assertPublishedVersion(version, "npm registry version key");
+    assertPlainObject(descriptor, `npm registry version ${version}`);
+    if (
+      descriptor.name !== packageName
+      || descriptor.version !== version
+    ) {
+      throw new Error(`npm registry version ${version} 元数据矛盾`);
+    }
+    if (stableVersionPattern.test(version)) stableVersions.push(version);
+  }
+  return stableVersions.sort(compareStableVersions);
+}
+
+function assertRegistryResponse(response) {
+  if (
+    response === null
+    || typeof response !== "object"
+    || !Number.isInteger(response.status)
+    || typeof response.url !== "string"
+    || typeof response.redirected !== "boolean"
+    || response.headers === null
+    || typeof response.headers !== "object"
+    || typeof response.headers.get !== "function"
+  ) {
+    throw new Error("npm registry 返回了无效响应结构");
+  }
+  if (response.redirected || response.url !== registryEndpoint) {
+    throw new Error("npm registry 响应 URL 不符合固定端点");
+  }
+  const contentType = response.headers.get("content-type");
+  if (
+    typeof contentType !== "string"
+    || !/(?:^|[+/.-])json(?:$|[;\s])/i.test(contentType)
+  ) {
+    throw new Error("npm registry 响应 content-type 不是 JSON");
+  }
+}
+
+function isExactNotFound(value) {
+  return (
+    value !== null
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && Object.getPrototypeOf(value) === Object.prototype
+    && Object.keys(value).length === 1
+    && value.error === "Not found"
   );
+}
+
+export async function queryPublishedVersions({
+  fetchImpl = globalThis.fetch,
+  maximumResponseBytes = defaultMaximumResponseBytes
+} = {}) {
+  if (typeof fetchImpl !== "function") {
+    throw new Error("fetchImpl 必须是函数");
+  }
+  if (
+    !Number.isSafeInteger(maximumResponseBytes)
+    || maximumResponseBytes < 1
+  ) {
+    throw new Error("maximumResponseBytes 必须是正整数");
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    registryTimeoutMilliseconds
+  );
+  timeout.unref?.();
+  try {
+    let response;
+    try {
+      response = await fetchImpl(registryEndpoint, {
+        method: "GET",
+        headers: {
+          accept: "application/vnd.npm.install-v1+json"
+        },
+        redirect: "error",
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        signal: controller.signal
+      });
+    } catch (error) {
+      throw new Error(`npm registry 查询失败：${error.message}`);
+    }
+    assertRegistryResponse(response);
+    if (response.status !== 200 && response.status !== 404) {
+      throw new Error(`npm registry 查询失败：HTTP ${response.status}`);
+    }
+    const source = await readBoundedRegistryBody(
+      response,
+      maximumResponseBytes
+    );
+    const value = parseRegistryJson(source);
+    if (response.status === 404) {
+      if (!isExactNotFound(value)) {
+        throw new Error("npm registry 404 响应无法确认包不存在");
+      }
+      return [];
+    }
+    return versionsFromPackument(value);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function parseCliArgs(args) {
@@ -276,8 +346,27 @@ function limitUtf8(source, maximumBytes) {
   return output;
 }
 
-function sanitizeFailure(source, sensitivePaths) {
-  let output = String(source ?? "未知错误")
+function redactCredentials(source) {
+  let output = source.replace(
+    /\b(https?):\/\/[^@\s/?#]+@/gi,
+    "$1://<凭据已隐藏>@"
+  );
+  output = output.replace(
+    /(["']?Authorization["']?\s*[:=]\s*)(?:"(?:Basic|Bearer)\s+[^"\r\n]*"|'(?:Basic|Bearer)\s+[^'\r\n]*'|(?:Basic|Bearer)\s+[^\s,;}\]]+)/gi,
+    "$1<凭据已隐藏>"
+  );
+  output = output.replace(
+    /(\bnpm_[A-Za-z0-9_.:/-]+\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}\]]+)/gi,
+    "$1<凭据已隐藏>"
+  );
+  return output.replace(
+    /(["']?(?:_authToken|_auth|password|token|secret|apiKey)["']?\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}\]]+)/gi,
+    "$1<凭据已隐藏>"
+  );
+}
+
+export function sanitizeReleaseFailure(source, sensitivePaths = []) {
+  let output = redactCredentials(String(source ?? "未知错误"))
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
   for (const sensitivePath of [...new Set(sensitivePaths.filter(Boolean))]
     .map((value) => path.resolve(String(value)))
@@ -306,19 +395,17 @@ function isDirectExecution() {
 
 if (isDirectExecution()) {
   const args = process.argv.slice(2);
-  const npmCliPath = resolveNpmCliPath();
   try {
     const { tag } = parseCliArgs(args);
     const packageJson = JSON.parse(await readFile(packagePath, "utf8"));
-    const publishedVersions = await queryPublishedVersions({ npmCliPath });
+    const publishedVersions = await queryPublishedVersions();
     const result = verifyRelease({ tag, packageJson, publishedVersions });
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
-    const summary = sanitizeFailure(error?.message, [
+    const summary = sanitizeReleaseFailure(error?.message, [
       process.cwd(),
       kitRoot,
-      packagePath,
-      npmCliPath
+      packagePath
     ]);
     process.stderr.write(`RELEASE_VERIFY_FAILED: ${summary}\n`);
     process.exitCode = 1;
