@@ -13,6 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readTarballEntries } from "./package-smoke.mjs";
 
+const kitRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const schemaKeys = [
   "schemaVersion",
   "version",
@@ -26,6 +27,69 @@ const versionPattern =
 const commitPattern = /^[0-9a-f]{40}$/;
 const sha256Pattern = /^[0-9a-f]{64}$/;
 const controlPattern = /[\u0000-\u001f\u007f]/;
+const maximumFailureBytes = 900;
+
+function replaceAllLiteral(source, value, replacement) {
+  if (!value) return source;
+  const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return source.replace(
+    new RegExp(escaped, process.platform === "win32" ? "gi" : "g"),
+    replacement
+  );
+}
+
+function limitUtf8(source, maximumBytes) {
+  let output = "";
+  let bytes = 0;
+  for (const character of source) {
+    const size = Buffer.byteLength(character, "utf8");
+    if (bytes + size > maximumBytes) return `${output}…`;
+    output += character;
+    bytes += size;
+  }
+  return output;
+}
+
+function sanitizeFailure(source, sensitivePaths) {
+  let output = String(source ?? "未知错误")
+    .replaceAll("\0", "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+  const paths = [...new Set(sensitivePaths.filter(Boolean).map((value) => (
+    path.resolve(String(value))
+  )))].sort((left, right) => right.length - left.length);
+  for (const sensitivePath of paths) {
+    output = replaceAllLiteral(output, sensitivePath, "<已隐藏路径>");
+    output = replaceAllLiteral(
+      output,
+      sensitivePath.replaceAll("\\", "/"),
+      "<已隐藏路径>"
+    );
+  }
+  output = output
+    .replace(/file:\/\/\/[^\s)"']+/gi, "<已隐藏路径>")
+    .replace(/(?:[A-Za-z]:[\\/]|\\\\)[^ \t\r\n)"'<>]*/g, "<已隐藏路径>")
+    .replace(/(^|[\s("'=])\/[^ \t\r\n)"'<>]+/g, "$1<已隐藏路径>")
+    .replace(/\s*\n\s*/g, " ")
+    .trim();
+  return limitUtf8(output || "未知错误", maximumFailureBytes);
+}
+
+function cliSensitivePaths(args) {
+  const pathOptions = new Set([
+    "--pack-json",
+    "--directory",
+    "--output",
+    "--evidence",
+    "--tarball"
+  ]);
+  const output = [process.cwd(), kitRoot];
+  for (let index = 0; index < args.length - 1; index += 1) {
+    if (pathOptions.has(args[index])) output.push(args[index + 1]);
+  }
+  return output;
+}
 
 function assertPlainObject(value, label) {
   if (
@@ -377,8 +441,12 @@ function isDirectExecution() {
 }
 
 if (isDirectExecution()) {
+  const cliArgs = process.argv.slice(2);
+  const command = ["create", "verify"].includes(cliArgs[0])
+    ? cliArgs[0]
+    : "unknown";
   try {
-    const { mode, values } = parseCliArgs(process.argv.slice(2));
+    const { mode, values } = parseCliArgs(cliArgs);
     if (mode === "create") {
       const result = await createReleaseEvidence({
         commit: values.commit,
@@ -409,11 +477,13 @@ if (isDirectExecution()) {
       })}\n`);
     }
   } catch (error) {
-    const summary = String(error?.message ?? "未知错误")
-      .replaceAll("\0", "")
-      .replace(/\r?\n[\s\S]*/, "")
-      .slice(0, 800);
-    process.stderr.write(`RELEASE_EVIDENCE_FAILED: ${summary}\n`);
+    const summary = sanitizeFailure(
+      error?.message,
+      cliSensitivePaths(cliArgs)
+    );
+    process.stderr.write(
+      `RELEASE_EVIDENCE_FAILED: ${command}: ${summary}\n`
+    );
     process.exitCode = 1;
   }
 }

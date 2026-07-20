@@ -10,4 +10,5 @@ target/
 .env.*
 !.env.example
 .release/
+release-candidate/
 

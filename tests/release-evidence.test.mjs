@@ -486,6 +486,109 @@ test("CI pins official actions and defines the complete cross-platform gates", a
   assert.match(workflow, /retention-days: 90/);
   assert.match(workflow, /if-no-files-found: error/);
   assert.match(workflow, /persist-credentials: false/);
+  const parsedWorkflow = (await import("yaml")).default.parse(workflow);
+  const upload = parsedWorkflow.jobs["release-candidate"].steps.find((step) => (
+    String(step.uses ?? "").startsWith("actions/upload-artifact@")
+  ));
+  assert.ok(upload, "release-candidate 必须上传 artifact");
+  assert.deepEqual(
+    upload.with.path.split(/\r?\n/).filter(Boolean),
+    [
+      "release-candidate/${{ steps.pack.outputs.filename }}",
+      "release-candidate/release-evidence.json"
+    ]
+  );
+  assert.equal(upload.with["include-hidden-files"], undefined);
+  assert.doesNotMatch(upload.with.path, /(^|\/)\./m);
   assert.doesNotMatch(workflow, /\t/);
   assert.doesNotMatch(workflow, /\b0\.1\.0\b/);
+});
+
+test("candidate directory is ignored without relying on hidden artifact upload", async () => {
+  const ignore = await readFile(path.join(kitRoot, ".gitignore"), "utf8");
+  assert.match(ignore, /^release-candidate\/$/m);
+});
+
+test("CLI filesystem failures redact every private path and stay bounded", async (t) => {
+  const privateRoot = await mkdtemp(
+    path.join(tmpdir(), "private-secret-release-evidence-")
+  );
+  t.after(() => rm(privateRoot, { recursive: true, force: true }));
+  const missingEvidence = path.join(privateRoot, "hidden evidence.json");
+  const missingTarball = path.join(privateRoot, "hidden candidate.tgz");
+  const existing = await create(t);
+  await rm(existing.tarball);
+
+  for (const args of [
+    [
+      "verify",
+      "--evidence",
+      missingEvidence,
+      "--tarball",
+      missingTarball,
+      "--expected-commit",
+      commit,
+      "--expected-version",
+      "0.1.1"
+    ],
+    [
+      "create",
+      "--commit",
+      commit,
+      "--pack-json",
+      path.join(privateRoot, "missing pack.json"),
+      "--directory",
+      privateRoot,
+      "--output",
+      path.join(privateRoot, "missing parent", "private output.json")
+    ],
+    [
+      "verify",
+      "--evidence",
+      existing.output,
+      "--tarball",
+      existing.tarball,
+      "--expected-commit",
+      commit,
+      "--expected-version",
+      existing.version
+    ],
+    [
+      "create",
+      "--commit",
+      commit,
+      "--pack-json",
+      existing.packJson,
+      "--directory",
+      existing.directory,
+      "--output",
+      path.join(existing.directory, "missing parent", "private output.json")
+    ]
+  ]) {
+    const result = await runCli(args);
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /^RELEASE_EVIDENCE_FAILED: (verify|create):/);
+    assert.doesNotMatch(result.stderr, /\n\s+at\s/);
+    assert.doesNotMatch(result.stderr, /private-secret-release-evidence/i);
+    assert.doesNotMatch(result.stderr, new RegExp(
+      privateRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+      "i"
+    ));
+    assert.doesNotMatch(result.stderr, new RegExp(
+      kitRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+      "i"
+    ));
+    for (const input of args.filter((value) => path.isAbsolute(value))) {
+      assert.doesNotMatch(result.stderr, new RegExp(
+        input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+        "i"
+      ));
+    }
+    assert.doesNotMatch(
+      result.stderr,
+      /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/
+    );
+    assert.ok(Buffer.byteLength(result.stderr, "utf8") <= 1024);
+  }
 });

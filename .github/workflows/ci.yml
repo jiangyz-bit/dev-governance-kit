@@ -72,23 +72,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p .release
-          npm pack --json --pack-destination .release > .release/pack.json
+          mkdir -p release-candidate
+          npm pack --json --pack-destination release-candidate > release-candidate/pack.json
           VERSION="$(node -p "require('./package.json').version")"
           node tooling/release-evidence.mjs create \
             --commit "$GITHUB_SHA" \
-            --pack-json .release/pack.json \
-            --directory .release \
-            --output .release/release-evidence.json
-          FILENAME="$(node -e "const p=require('./.release/pack.json'); process.stdout.write(p[0].filename)")"
+            --pack-json release-candidate/pack.json \
+            --directory release-candidate \
+            --output release-candidate/release-evidence.json
+          FILENAME="$(node -e "const p=require('./release-candidate/pack.json'); process.stdout.write(p[0].filename)")"
           node tooling/release-evidence.mjs verify \
-            --evidence .release/release-evidence.json \
-            --tarball ".release/$FILENAME" \
+            --evidence release-candidate/release-evidence.json \
+            --tarball "release-candidate/$FILENAME" \
             --expected-commit "$GITHUB_SHA" \
             --expected-version "$VERSION"
           node --input-type=module -e '
             import { appendFileSync, readFileSync } from "node:fs";
-            const [entry] = JSON.parse(readFileSync(".release/pack.json", "utf8"));
+            const [entry] = JSON.parse(readFileSync("release-candidate/pack.json", "utf8"));
             const version = entry?.version;
             const filename = entry?.filename;
             const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
@@ -108,7 +108,7 @@ jobs:
         with:
           name: dev-governance-kit-${{ steps.pack.outputs.version }}-${{ github.sha }}
           path: |
-            .release/${{ steps.pack.outputs.filename }}
-            .release/release-evidence.json
+            release-candidate/${{ steps.pack.outputs.filename }}
+            release-candidate/release-evidence.json
           if-no-files-found: error
           retention-days: 90
