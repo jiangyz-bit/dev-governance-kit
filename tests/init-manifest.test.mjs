@@ -272,3 +272,28 @@ test("blocks nested Git repositories below selected components until repository 
   assert.equal(resolved.status, "ready");
   assert.equal(resolved.manifest.project.repositoryMode, "monorepo");
 });
+
+test("blocks nested Git repositories below an independently versioned component", async (t) => {
+  const workspaceDir = await workspace(t);
+  const input = {
+    workspaceDir,
+    detection: detection({
+      candidates: [components.server, components.admin],
+      gitMarkers: [
+        gitMarker(workspaceDir, "apps/server"),
+        gitMarker(workspaceDir, "apps/admin"),
+        gitMarker(workspaceDir, "apps/server/plugins/nested-repo")
+      ]
+    })
+  };
+
+  for (const answers of [{}, { yes: true }]) {
+    const result = resolveInitManifest({ ...input, answers });
+    assert.equal(result.status, "needs_input");
+    assert.equal(result.questions[0].code, "REPOSITORY_MODE_UNCLEAR");
+  }
+
+  const resolved = resolveInitManifest({ ...input, answers: { repositoryMode: "multi-repo" } });
+  assert.equal(resolved.status, "ready");
+  assert.equal(resolved.manifest.project.repositoryMode, "multi-repo");
+});

@@ -145,12 +145,13 @@ function inferRepositoryMode(candidates, gitMarkers) {
   return { code: "REPOSITORY_MODE_UNCLEAR", reason: "HYBRID_GIT_BOUNDARIES" };
 }
 
-function hasNestedGitRepository(candidates, gitMarkers, workspaceDir) {
-  const workspaceRoot = path.resolve(workspaceDir);
+function hasNestedGitRepository(candidates, gitMarkers) {
   const markerRoots = gitMarkers.map(markerRoot).filter(Boolean);
-  if (!markerRoots.some((rootDir) => samePath(rootDir, workspaceRoot))) return false;
-  return candidates.some((candidate) => markerRoots.some((rootDir) => (
-    !samePath(rootDir, workspaceRoot) && isAncestor(candidate.rootDir, rootDir)
+  const owningRoots = candidates
+    .map((candidate) => nearestGitRoot(candidate.rootDir, gitMarkers))
+    .filter(Boolean);
+  return owningRoots.some((owningRoot) => markerRoots.some((rootDir) => (
+    !samePath(rootDir, owningRoot) && isAncestor(owningRoot, rootDir)
   )));
 }
 
@@ -202,7 +203,7 @@ export function resolveInitManifest({ workspaceDir, detection, answers = {} }) {
     rootDir: path.resolve(workspaceDir, candidate.path)
   }));
   const repositoryMode = repositoryModeAnswer(answers)
-    ?? (hasNestedGitRepository(candidatesWithRoots, detection.gitMarkers ?? [], workspaceDir)
+    ?? (hasNestedGitRepository(candidatesWithRoots, detection.gitMarkers ?? [])
       ? { code: "REPOSITORY_MODE_UNCLEAR", reason: "NESTED_GIT_REPOSITORY" }
       : inferRepositoryMode(candidatesWithRoots, detection.gitMarkers ?? []));
   if (typeof repositoryMode !== "string") {
