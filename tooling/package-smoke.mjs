@@ -15,10 +15,76 @@ import {
 import { gunzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 import { createSmokeProject } from "./create-smoke-project.mjs";
 
 const kitRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const maximumFailureBytes = 900;
+
+function replaceAllLiteral(source, value, replacement) {
+  if (!value) return source;
+  const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return source.replace(
+    new RegExp(escaped, process.platform === "win32" ? "gi" : "g"),
+    replacement
+  );
+}
+
+function limitUtf8(source, maximumBytes) {
+  let output = "";
+  let bytes = 0;
+  for (const character of source) {
+    const size = Buffer.byteLength(character, "utf8");
+    if (bytes + size > maximumBytes) return `${output}…`;
+    output += character;
+    bytes += size;
+  }
+  return output;
+}
+
+function sanitizeDiagnostic(source, sensitivePaths = []) {
+  let output = String(source ?? "")
+    .replaceAll("\0", "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+  const paths = [...new Set(sensitivePaths.filter(Boolean).map((value) => (
+    path.resolve(String(value))
+  )))].sort((left, right) => right.length - left.length);
+  for (const sensitivePath of paths) {
+    output = replaceAllLiteral(output, sensitivePath, "<已隐藏路径>");
+    output = replaceAllLiteral(
+      output,
+      sensitivePath.replaceAll("\\", "/"),
+      "<已隐藏路径>"
+    );
+  }
+  output = output
+    .replace(/file:\/\/\/[^\s)"']+/gi, "<已隐藏路径>")
+    .replace(/(?:[A-Za-z]:[\\/]|\\\\)[^\r\n]*/g, "<已隐藏路径>")
+    .replace(
+      /(^|[\s("'=])\/[^ \t\r\n)"'<>]+/g,
+      "$1<已隐藏路径>"
+    );
+  output = output.trim();
+  return limitUtf8(output, maximumFailureBytes);
+}
+
+export function formatPackageSmokeError(error, { sensitivePaths = [] } = {}) {
+  const summary = sanitizeDiagnostic(
+    error?.message ?? "未知错误",
+    sensitivePaths
+  );
+  return `PACKAGE_SMOKE_FAILED: ${summary || "未知错误"}`;
+}
+
+class PackageSmokeFailure extends Error {
+  constructor(error, sensitivePaths) {
+    super(formatPackageSmokeError(error, { sensitivePaths }));
+    this.name = "PackageSmokeFailure";
+  }
+}
 
 export function parsePackageSmokeArgs(args) {
   let tarball;
@@ -74,9 +140,9 @@ function run(command, args, { cwd, env = process.env } = {}) {
         return;
       }
       reject(new Error([
-        `子命令失败：${path.basename(command)} ${args.join(" ")}`,
+        `子命令失败：${path.basename(command)}`,
         `退出码：${code ?? "null"}${signal ? `，信号：${signal}` : ""}`,
-        stderr || stdout
+        (stderr || stdout).trim()
       ].filter(Boolean).join("\n")));
     });
   });
@@ -171,7 +237,27 @@ function parsePax(content) {
   return fields;
 }
 
-async function readTarball(tarball) {
+function portableTarPackagePath(archivePath) {
+  if (!archivePath.startsWith("package/")) {
+    throw new Error("tarball 条目不在 package/ 根目录");
+  }
+  const packagePath = archivePath.slice("package/".length);
+  const segments = packagePath.split("/");
+  if (
+    !packagePath
+    || packagePath.includes("\\")
+    || path.posix.isAbsolute(packagePath)
+    || segments.some((segment) => (
+      segment === "" || segment === "." || segment === ".."
+    ))
+    || path.posix.normalize(packagePath) !== packagePath
+  ) {
+    throw new Error("tarball 包含越界或歧义条目路径");
+  }
+  return packagePath;
+}
+
+export async function readTarballEntries(tarball) {
   const archive = gunzipSync(await readFile(tarball));
   const entries = new Map();
   let offset = 0;
@@ -185,6 +271,9 @@ async function readTarball(tarball) {
     const headerName = tarString(header, 0, 100);
     const headerPath = prefix ? `${prefix}/${headerName}` : headerName;
     const contentStart = offset + 512;
+    if (contentStart + size > archive.length) {
+      throw new Error("tarball 条目内容不完整");
+    }
     const content = archive.subarray(contentStart, contentStart + size);
 
     if (type === "x") {
@@ -194,12 +283,15 @@ async function readTarball(tarball) {
     } else if (type === "\0" || type === "0") {
       const archivePath = pendingPath ?? headerPath;
       pendingPath = undefined;
-      const packagePath = archivePath.startsWith("package/")
-        ? archivePath.slice("package/".length)
-        : archivePath;
-      entries.set(packagePath.replaceAll("\\", "/"), Buffer.from(content));
+      const packagePath = portableTarPackagePath(archivePath);
+      if (entries.has(packagePath)) {
+        throw new Error(`tarball 包含重复条目：${packagePath}`);
+      }
+      entries.set(packagePath, Buffer.from(content));
     } else {
       pendingPath = undefined;
+      portableTarPackagePath(headerPath);
+      throw new Error(`tarball 包含不支持的条目类型：${type || "unknown"}`);
     }
     offset = contentStart + Math.ceil(size / 512) * 512;
   }
@@ -230,11 +322,88 @@ async function listFiles(rootDir, relativePath, output) {
   }
 }
 
-async function expectedPackageFiles(packageJson) {
+function isPathAtOrInside(parent, target) {
+  const relative = path.relative(path.resolve(parent), path.resolve(target));
+  return relative === "" || (
+    relative !== ".."
+    && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative)
+  );
+}
+
+async function normalizeTrustedFileEntry(rootDir, rootRealPath, entry) {
+  if (typeof entry !== "string" || entry.length === 0) {
+    throw new Error("可信 package.json.files 包含空条目");
+  }
+  if (entry.includes("\\")) {
+    throw new Error(`可信 package.json.files 使用了反斜杠：${entry}`);
+  }
+  if (path.posix.isAbsolute(entry) || path.win32.isAbsolute(entry)) {
+    throw new Error(`可信 package.json.files 包含绝对路径：${entry}`);
+  }
+  const relativePath = entry.endsWith("/") ? entry.slice(0, -1) : entry;
+  const segments = relativePath.split("/");
+  if (
+    !relativePath
+    || relativePath === "."
+    || segments.some((segment) => (
+      segment === "" || segment === "." || segment === ".."
+    ))
+    || path.posix.normalize(relativePath) !== relativePath
+  ) {
+    throw new Error(`可信 package.json.files 包含越界或歧义路径：${entry}`);
+  }
+
+  const resolvedPath = path.resolve(rootDir, ...segments);
+  if (
+    resolvedPath === path.resolve(rootDir)
+    || !isPathAtOrInside(rootDir, resolvedPath)
+  ) {
+    throw new Error(`可信 package.json.files 解析到仓库外：${entry}`);
+  }
+
+  let current = path.resolve(rootDir);
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    const info = await lstat(current);
+    if (info.isSymbolicLink()) {
+      throw new Error(`可信 package.json.files 不允许符号链接：${entry}`);
+    }
+  }
+  const resolvedRealPath = await realpath(current);
+  if (!isPathAtOrInside(rootRealPath, resolvedRealPath)) {
+    throw new Error(`可信 package.json.files 解析到仓库外：${entry}`);
+  }
+  return relativePath;
+}
+
+function assertTrustedPackagePolicy(artifact, trusted) {
+  const fields = ["name", "version", "files", "bin", "engines"];
+  for (const field of fields) {
+    if (!isDeepStrictEqual(artifact?.[field], trusted?.[field])) {
+      throw new Error(
+        `artifact package.json 与可信发布策略不一致：${field}`
+      );
+    }
+  }
+}
+
+export async function expandTrustedPackageFiles(
+  trustedPackageJson,
+  { rootDir = kitRoot } = {}
+) {
+  if (!Array.isArray(trustedPackageJson.files)) {
+    throw new Error("可信 package.json.files 必须是数组");
+  }
   const expected = new Set(["package.json", "README.md", "LICENSE"]);
-  for (const allowed of packageJson.files) {
-    const relativePath = allowed.replace(/[\\/]+$/, "");
-    await listFiles(kitRoot, relativePath, expected);
+  const rootRealPath = await realpath(rootDir);
+  for (const allowed of trustedPackageJson.files) {
+    const relativePath = await normalizeTrustedFileEntry(
+      rootDir,
+      rootRealPath,
+      allowed
+    );
+    await listFiles(rootDir, relativePath, expected);
   }
   return [...expected].sort();
 }
@@ -253,15 +422,6 @@ function parseJsonDocument(result, label) {
   } catch (error) {
     throw new Error(`${label} 没有输出单个有效 JSON：${error.message}`);
   }
-}
-
-function isPathAtOrInside(parent, target) {
-  const relative = path.relative(path.resolve(parent), path.resolve(target));
-  return relative === "" || (
-    relative !== ".."
-    && !relative.startsWith(`..${path.sep}`)
-    && !path.isAbsolute(relative)
-  );
 }
 
 export async function runPackageSmoke(options = {}) {
@@ -311,15 +471,20 @@ export async function runPackageSmoke(options = {}) {
       tarball = path.resolve(packDir, packMetadata.filename);
     }
 
-    const tarEntries = await readTarball(tarball);
+    const trustedPackageJson = JSON.parse(await readFile(
+      path.join(kitRoot, "package.json"),
+      "utf8"
+    ));
+    const tarEntries = await readTarballEntries(tarball);
     const tarPackageJson = JSON.parse(
       tarEntries.get("package.json")?.toString("utf8") ?? "null"
     );
-    assert.equal(tarPackageJson?.name, "dev-governance-kit");
+    assertTrustedPackagePolicy(tarPackageJson, trustedPackageJson);
     const actualFiles = [...tarEntries.keys()].sort();
-    const expectedFiles = await expectedPackageFiles(tarPackageJson);
+    const expectedFiles = await expandTrustedPackageFiles(trustedPackageJson);
     assertSamePaths(actualFiles, expectedFiles);
     if (packMetadata) {
+      assert.equal(packMetadata.name, trustedPackageJson.name);
       assert.equal(packMetadata.version, tarPackageJson.version);
       assertSamePaths(
         packMetadata.files.map((entry) => entry.path.replaceAll("\\", "/")),
@@ -327,7 +492,7 @@ export async function runPackageSmoke(options = {}) {
       );
     }
     for (const bin of ["dev-governance-kit", "governance-kit"]) {
-      const target = tarPackageJson.bin?.[bin]?.replace(/^\.\//, "");
+      const target = trustedPackageJson.bin?.[bin]?.replace(/^\.\//, "");
       assert.ok(target, `tarball 缺少 bin：${bin}`);
       assert.ok(tarEntries.has(target), `tarball 缺少 bin 目标：${target}`);
     }
@@ -418,6 +583,13 @@ export async function runPackageSmoke(options = {}) {
         ? { registryVerification: verification }
         : { candidateVerification: verification })
     };
+  } catch (error) {
+    if (error instanceof PackageSmokeFailure) throw error;
+    throw new PackageSmokeFailure(error, [
+      root,
+      kitRoot,
+      parsed.tarball
+    ]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -430,13 +602,20 @@ function isDirectExecution() {
 }
 
 if (isDirectExecution()) {
+  const sensitivePaths = [
+    kitRoot,
+    ...process.argv.slice(2).filter((argument) => path.isAbsolute(argument))
+  ];
   try {
     const result = await runPackageSmoke(
       parsePackageSmokeArgs(process.argv.slice(2))
     );
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } catch (error) {
-    process.stderr.write(`${error.stack ?? error.message}\n`);
+    const message = error instanceof PackageSmokeFailure
+      ? error.message
+      : formatPackageSmokeError(error, { sensitivePaths });
+    process.stderr.write(`${message}\n`);
     process.exitCode = 1;
   }
 }
