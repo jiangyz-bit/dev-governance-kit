@@ -1,7 +1,5 @@
 import path from "node:path";
 
-const ansiEscapePattern = /\u001B(?:\[[0-?]*[ -/]*[@-~]|[@-_])/g;
-const terminalControlPattern = /[\u0000-\u001f\u007f-\u009f]/g;
 const permissionConflictCodes = new Set([
   "TARGET_NOT_WRITABLE",
   "EACCES",
@@ -15,11 +13,27 @@ const pathConflictCodes = new Set([
 ]);
 
 export function sanitizeTerminalText(value, fallback = "") {
-  return String(value ?? fallback)
-    .replace(ansiEscapePattern, "")
-    .replace(terminalControlPattern, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
+  let display = "";
+  for (const character of String(value ?? fallback)) {
+    const code = character.codePointAt(0);
+    if (character === "\\") {
+      display += "\\\\";
+    } else if (character === "\n") {
+      display += "\\n";
+    } else if (character === "\r") {
+      display += "\\r";
+    } else if (character === "\t") {
+      display += "\\t";
+    } else if (
+      code <= 0x1f
+      || (code >= 0x7f && code <= 0x9f)
+    ) {
+      display += `\\x${code.toString(16).padStart(2, "0")}`;
+    } else {
+      display += character;
+    }
+  }
+  return display;
 }
 
 const componentCopy = {
@@ -49,7 +63,9 @@ function relativePath(result, value) {
   const candidate = path.isAbsolute(value)
     ? path.relative(workspace, value)
     : value;
-  const normalized = candidate.replaceAll("\\", "/");
+  const normalized = path.sep === "\\"
+    ? candidate.replaceAll("\\", "/")
+    : candidate;
   if (
     normalized === ""
     || normalized === "."
@@ -220,6 +236,9 @@ function needsInputLines(result) {
   } else if (code === "UNSUPPORTED_QUESTION") {
     summary = "识别过程中遇到当前版本还不能处理的问题，已经安全停止。";
     action = "下一步：使用详细模式保存诊断信息并反馈问题；不要随意选择或修改现有文件。";
+  } else if (code === "UNSAFE_OPTION_DISPLAY") {
+    summary = "有些候选目录无法在终端中清楚地区分，因此没有显示选项。";
+    action = "下一步：使用详细模式确认这些目录，重命名空名称或重复目录后再重新运行；本工具不会替你猜。";
   }
   return [
     summary,

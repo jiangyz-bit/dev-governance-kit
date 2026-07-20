@@ -23,7 +23,10 @@ import { executeApplyPreview } from "../tooling/lib/apply-preview.mjs";
 import { GovernanceError } from "../tooling/lib/errors.mjs";
 import { writeUtf8Atomic } from "../tooling/lib/files.mjs";
 import { renderInitManifest } from "../tooling/lib/init-manifest.mjs";
-import { formatInitHuman } from "../tooling/lib/init-presenter.mjs";
+import {
+  formatInitHuman,
+  sanitizeTerminalText
+} from "../tooling/lib/init-presenter.mjs";
 import {
   collectInitAnswers,
   createPromptSession
@@ -1538,7 +1541,8 @@ for (const [code, phrase] of [
 for (const [code, phrase] of [
   ["INVALID_ANSWER", "有效序号"],
   ["PROMPT_PAGE_LIMIT", "需要确认的信息较多"],
-  ["UNSUPPORTED_QUESTION", "当前版本还不能处理"]
+  ["UNSUPPORTED_QUESTION", "当前版本还不能处理"],
+  ["UNSAFE_OPTION_DISPLAY", "无法在终端中清楚地区分"]
 ]) {
   test(`novice needs-input output gives reason-specific action for ${code}`, () => {
     const output = formatInitHuman(noviceResult("needs_input", { code }));
@@ -1565,7 +1569,7 @@ test("terminal display boundary neutralizes path newlines ANSI and controls", ()
 
   assert.doesNotMatch(output, /\n伪造下一步/);
   assert.doesNotMatch(output, /[\u001b\u0000]/);
-  assert.match(output, /server 伪造下一步/);
+  assert.match(output, /server\\n伪造下一步\\x1b\[31m\\x00/);
   assert.doesNotMatch(output, /C:[\\/]/i);
 });
 
@@ -1589,7 +1593,10 @@ test("prompt display boundary neutralizes question option and confirmation contr
 
   assert.equal(chosen.status, "answered");
   assert.doesNotMatch(renderedOption.label, /[\r\n\u001b\u0085]/);
-  assert.match(renderedOption.label, /apps\/admin 伪造选项/);
+  assert.match(
+    renderedOption.label,
+    /apps\/admin\\n伪造选项\\x1b\[31m\\x85/
+  );
   assert.equal(
     chosen.answers.components.admin.path,
     "apps/admin\n伪造选项\u001b[31m\u0085"
@@ -1636,9 +1643,118 @@ test("real prompt renderer sanitizes dynamic message label and impact fields", a
   assert.equal(answer, "1");
   assert.doesNotMatch(displayed, /[\r\u001b\u0000\u0085]/);
   assert.doesNotMatch(displayed, /\n伪造标题|\n伪造选项|\n伪造影响/);
-  assert.match(displayed, /选择目录 伪造标题/);
-  assert.match(displayed, /apps\/admin 伪造选项/);
-  assert.match(displayed, /只添加治理文件 伪造影响/);
+  assert.match(displayed, /选择目录\\n伪造标题\\x1b\[2J/);
+  assert.match(displayed, /apps\/admin\\r\\n伪造选项\\x00/);
+  assert.match(displayed, /只添加治理文件\\x85伪造影响/);
+});
+
+test("terminal encoding preserves meaningful spaces and distinguishes escaped text", () => {
+  assert.equal(sanitizeTerminalText("a b"), "a b");
+  assert.equal(sanitizeTerminalText("a  b"), "a  b");
+  assert.notEqual(
+    sanitizeTerminalText("a b"),
+    sanitizeTerminalText("a  b")
+  );
+  assert.equal(sanitizeTerminalText("line\nbreak"), "line\\nbreak");
+  assert.equal(sanitizeTerminalText("line\\nbreak"), "line\\\\nbreak");
+  assert.notEqual(
+    sanitizeTerminalText("line\nbreak"),
+    sanitizeTerminalText("line\\nbreak")
+  );
+  assert.equal(
+    sanitizeTerminalText(" \r\u001b\u0000\u0085 "),
+    " \\r\\x1b\\x00\\x85 "
+  );
+});
+
+test("presenter keeps distinct spaced paths distinguishable on one line", () => {
+  const result = noviceResult("planned");
+  result.report.created = [
+    { path: path.join(result.workspace, "apps/a b/AGENTS.md") },
+    { path: path.join(result.workspace, "apps/a  b/AGENTS.md") },
+    { path: path.join(result.workspace, "apps/line\nbreak/AGENTS.md") }
+  ];
+
+  const output = formatInitHuman(result);
+
+  assert.match(output, /apps\/a b\/AGENTS\.md/);
+  assert.match(output, /apps\/a  b\/AGENTS\.md/);
+  assert.match(output, /apps\/line\\nbreak\/AGENTS\.md/);
+  assert.doesNotMatch(output, /\n伪造|C:[\\/]/i);
+});
+
+for (const candidates of [
+  [
+    { path: "", profile: "react-admin" },
+    { path: "apps/admin", profile: "react-admin" }
+  ],
+  [
+    { path: "   ", profile: "react-admin" },
+    { path: "apps/admin", profile: "react-admin" }
+  ],
+  [
+    { path: "apps/admin", profile: "react-admin" },
+    { path: "apps/admin", profile: "react-admin" }
+  ]
+]) {
+  test("does not prompt when option labels cannot be displayed uniquely", async () => {
+    const promptSession = scriptedPrompt(["1"]);
+    const result = await collectInitAnswers({
+      plan: {
+        status: "needs_input",
+        questions: [{
+          code: "ADMIN_COMPONENT_UNCLEAR",
+          component: "admin",
+          candidates
+        }]
+      },
+      promptSession
+    });
+
+    assert.equal(result.status, "needs_input");
+    assert.equal(result.code, "UNSAFE_OPTION_DISPLAY");
+    assert.deepEqual(result.answers, {});
+    assert.equal(promptSession.calls.length, 0);
+  });
+}
+
+test("confirmation page keeps trusted multi-line layout while sanitizing fields", async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  output.setEncoding("utf8");
+  let displayed = "";
+  output.on("data", (chunk) => {
+    displayed += chunk;
+  });
+  const session = createPromptSession({ input, output });
+  const pending = collectInitAnswers({
+    plan: {
+      status: "needs_input",
+      questions: [
+        {
+          code: "PROFILE_ASSUMPTION_UNCONFIRMED",
+          component: "server",
+          missing: ["flyway"]
+        },
+        {
+          code: "ADMIN_ROLE_UNCLEAR",
+          component: "admin",
+          path: "apps/admin\n伪造确认"
+        }
+      ]
+    },
+    promptSession: session
+  });
+  input.write("y\n");
+  const result = await pending;
+  session.close();
+
+  assert.equal(result.status, "answered");
+  assert.match(
+    displayed,
+    /请复核下面的识别结果：\n- .*数据库升级工具.*\n- apps\/admin\\n伪造确认.*\n确认无误后/
+  );
+  assert.doesNotMatch(displayed, /\n伪造确认/);
 });
 
 test("failed validation lists actual written relative paths", () => {

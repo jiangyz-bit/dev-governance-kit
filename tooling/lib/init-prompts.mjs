@@ -7,6 +7,7 @@ const confirmationCodes = new Set([
   "PROFILE_EVIDENCE_MISMATCH",
   "ADMIN_ROLE_UNCLEAR"
 ]);
+const preparedPrompt = Symbol("preparedPrompt");
 
 const componentNames = {
   server: "后端服务",
@@ -23,10 +24,13 @@ function eofError() {
 }
 
 function renderQuestion(question) {
-  const lines = [sanitizeTerminalText(question.message)];
+  const display = question[preparedPrompt]
+    ? (value) => String(value ?? "")
+    : sanitizeTerminalText;
+  const lines = [display(question.message)];
   for (const [index, option] of (question.options ?? []).entries()) {
     lines.push(
-      `${index + 1}. ${sanitizeTerminalText(option.label)}：${sanitizeTerminalText(option.impact)}`
+      `${index + 1}. ${display(option.label)}：${display(option.impact)}`
     );
   }
   lines.push("请输入序号（输入 0 取消）：");
@@ -102,7 +106,7 @@ export function createPromptSession({
       return ask(renderQuestion(question));
     },
     async confirm(message = "是否继续？输入 y 继续，直接回车或输入其他内容取消：(y/N) ") {
-      const answer = await ask(`${sanitizeTerminalText(message)} `);
+      const answer = await ask(message);
       return /^y(?:es)?$/i.test(answer.trim());
     },
     close() {
@@ -133,7 +137,7 @@ function componentChoice(question) {
   const componentName = question.component === "admin"
     ? "管理员使用的后台"
     : (componentNames[question.component] ?? "项目部分");
-  return {
+  const prompt = {
     message: `检测到多个可能的${componentName}，请选择正确目录。这个选择只决定治理文件放在哪个目录，不会移动或修改业务代码。`,
     options: (question.candidates ?? []).map((candidate) => ({
       value: candidate.path,
@@ -141,10 +145,20 @@ function componentChoice(question) {
       impact: "选择后只在这个目录准备治理文件"
     }))
   };
+  const labels = prompt.options.map((option) => option.label);
+  if (
+    labels.some((label) => label.trim().length === 0)
+    || new Set(labels).size !== labels.length
+  ) {
+    return { unsafeDisplay: true };
+  }
+  prompt[preparedPrompt] = true;
+  return prompt;
 }
 
 function repositoryChoice() {
   return {
+    [preparedPrompt]: true,
     message: "这些项目代码是怎样保存的？这个选择只影响治理配置如何描述目录关系，不会改变 Git 仓库。",
     options: [
       {
@@ -164,6 +178,9 @@ function repositoryChoice() {
 function questionPage(question) {
   if (/_COMPONENT_UNCLEAR$/.test(question.code ?? "")) {
     const prompt = componentChoice(question);
+    if (prompt.unsafeDisplay) {
+      return { kind: "unsafe_display", question };
+    }
     return {
       kind: "choice",
       question,
@@ -211,6 +228,9 @@ export async function collectInitAnswers({ plan, promptSession }) {
     if (confirmationCodes.has(question.code)) continue;
     const page = questionPage(question);
     if (!page) return needsInputResult(plan, "UNSUPPORTED_QUESTION");
+    if (page.kind === "unsafe_display") {
+      return needsInputResult(plan, "UNSAFE_OPTION_DISPLAY");
+    }
     pages.push(page);
   }
   if (confirmations.length > 0) {
