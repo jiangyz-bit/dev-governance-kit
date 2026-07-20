@@ -510,6 +510,12 @@ async function planInitializationUnsafe({
     } catch (error) {
       if (isInterrupted(error, signal)) throw error;
       if (!isManifestInputError(error, resolvedWorkspace)) throw error;
+      if (error?.code === "UNSAFE_REAL_PATH") {
+        return planningConflictResult(
+          resolvedWorkspace,
+          normalizeExecutionError(error, signal)
+        );
+      }
       return invalidManifestResult(
         resolvedWorkspace,
         normalizeManifestError(error)
@@ -531,6 +537,12 @@ async function planInitializationUnsafe({
     } catch (error) {
       if (isInterrupted(error, signal)) throw error;
       if (!isManifestInputError(error, resolvedWorkspace)) throw error;
+      if (error?.code === "UNSAFE_REAL_PATH") {
+        return planningConflictResult(
+          resolvedWorkspace,
+          normalizeExecutionError(error, signal)
+        );
+      }
       return invalidManifestResult(
         resolvedWorkspace,
         normalizeManifestError(error)

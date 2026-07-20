@@ -45,11 +45,15 @@ export async function createProjectContext({
     const rootDir = resolveInside(resolvedWorkspace, component.path);
     if (requireComponentDirs) {
       try {
+        await assertRealPathInside(
+          resolvedWorkspace,
+          rootDir,
+          { allowMissing: false }
+        );
         const info = await lstat(rootDir);
         if (!info.isDirectory()) {
           throw new Error("组件路径不是目录");
         }
-        await assertRealPathInside(resolvedWorkspace, rootDir, { allowMissing: false });
       } catch (error) {
         if (error.code === "UNSAFE_REAL_PATH") throw error;
         throw new GovernanceError("COMPONENT_DIR_INVALID", `组件目录不可用：${rootDir}`, {

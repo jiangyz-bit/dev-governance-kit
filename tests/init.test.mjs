@@ -726,6 +726,67 @@ test("returns evidence-backed safe rerun recovery after a partial failure", asyn
   );
 });
 
+test("a real partial write reports exact files and an unchanged rerun completes safely", async (t) => {
+  const workspaceDir = await createSupportedWorkspace(t);
+  const before = await snapshotWorkspace(workspaceDir);
+  const plan = await planInitialization({ workspaceDir, kitRoot });
+  let writes = 0;
+
+  const first = await executeInitialization(plan, {
+    executePreview: (preview, options) => executeApplyPreview(preview, {
+      ...options,
+      writeFile: async (targetPath, content, writeOptions) => {
+        writes += 1;
+        if (writes === 2) {
+          throw new GovernanceError(
+            "INJECTED_WRITE_FAILURE",
+            "第二个治理文件写入前失败"
+          );
+        }
+        await writeUtf8Atomic(targetPath, content, writeOptions);
+      }
+    })
+  });
+
+  assert.equal(first.status, "partial_failure");
+  assert.equal(first.code, "INJECTED_WRITE_FAILURE");
+  assert.equal(first.applied, true);
+  assert.equal(first.valid, false);
+  assert.equal(first.recovery.safeToRerun, true);
+  assert.equal(first.written.length, 2);
+  for (const writtenPath of first.written) {
+    assert.equal(
+      typeof (await readFile(writtenPath, "utf8")),
+      "string",
+      writtenPath
+    );
+  }
+  const afterFirst = await snapshotWorkspace(workspaceDir);
+  const changedPaths = [...new Set([
+    ...Object.keys(before),
+    ...Object.keys(afterFirst)
+  ])].filter((relativePath) => (
+    before[relativePath] !== afterFirst[relativePath]
+  )).sort();
+  assert.deepEqual(changedPaths, first.written.map((targetPath) => (
+    path.relative(workspaceDir, targetPath).replaceAll("\\", "/")
+  )).sort());
+
+  const rerun = await initializeGovernance({
+    workspaceDir,
+    kitRoot,
+    yes: true
+  });
+
+  assert.equal(rerun.status, "applied");
+  assert.equal(rerun.valid, true);
+  assert.equal(rerun.report.conflicts.length, 0);
+  assert.equal((await validateWorkspace({
+    workspaceDir,
+    kitRoot
+  })).valid, true);
+});
+
 test("detects a committed manifest when its writer throws after commit", async (t) => {
   const workspaceDir = await createSupportedWorkspace(t);
   const plan = await planInitialization({ workspaceDir, kitRoot });

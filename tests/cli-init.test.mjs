@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
@@ -9,7 +16,13 @@ import {
   executeInitialization,
   planInitialization
 } from "../tooling/lib/init.mjs";
-import { createProjectWorkspace } from "./helpers/project-workspace.mjs";
+import {
+  createDetectedWorkspace,
+  createProjectWorkspace,
+  createRealLink,
+  manifestForLinkedServer,
+  snapshotWorkspace as snapshotCompleteWorkspace
+} from "./helpers/project-workspace.mjs";
 
 const kitRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(kitRoot, "tooling", "cli.mjs");
@@ -575,3 +588,296 @@ test("Unix and macOS child SIGINT exits 130", {
   assert.equal(result.stderr, "");
   assert.match(result.stdout, /操作已中断/);
 });
+
+for (const mode of ["monorepo", "multi-repo"]) {
+  test(`${mode} init then validate succeeds through the public CLI`, async (t) => {
+    const workspace = await createDetectedWorkspace(t, mode);
+    const before = await snapshotCompleteWorkspace(workspace);
+
+    const initialized = await runCli([
+      "init", "--workspace", workspace, "--yes", "--json"
+    ]);
+    assert.equal(initialized.code, 0, initialized.stderr);
+    assert.equal(initialized.stderr, "");
+    const initResult = JSON.parse(initialized.stdout);
+    assert.equal(initResult.status, "applied");
+    assert.equal(initResult.valid, true);
+    assert.equal(initResult.written.length > 0, true);
+    assert.notDeepEqual(await snapshotCompleteWorkspace(workspace), before);
+
+    const validated = await runCli([
+      "validate", "--workspace", workspace, "--json"
+    ]);
+    assert.equal(validated.code, 0, validated.stderr);
+    assert.equal(validated.stderr, "");
+    assert.equal(JSON.parse(validated.stdout).report.valid, true);
+  });
+}
+
+for (const conflict of [
+  {
+    name: "user AGENTS.md",
+    relativePath: "server/AGENTS.md",
+    content: "# 用户自己的规则\n",
+    expectedCode: "USER_FILE_CONFLICT"
+  },
+  {
+    name: "business status-enums.json",
+    relativePath: "server/docs/status-enums.json",
+    content: JSON.stringify({ owner: "business" }),
+    expectedCode: "CREATE_ONLY_EXISTS"
+  }
+]) {
+  test(`${conflict.name} conflict leaves the complete workspace unchanged`, async (t) => {
+    const workspace = await createDetectedWorkspace(t, "monorepo", {
+      files: { [conflict.relativePath]: conflict.content }
+    });
+    const before = await snapshotCompleteWorkspace(workspace);
+
+    const result = await runCli([
+      "init", "--workspace", workspace, "--yes", "--json"
+    ]);
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stderr, "");
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.status, "conflict");
+    assert.ok(output.report.conflicts.some((item) => (
+      path.resolve(item.path) === path.resolve(workspace, conflict.relativePath)
+      && item.code === conflict.expectedCode
+    )));
+    assert.deepEqual(await snapshotCompleteWorkspace(workspace), before);
+  });
+}
+
+for (const linkType of [
+  { name: "directory symlink", type: "dir" },
+  { name: "Windows junction", type: "junction", windowsOnly: true }
+]) {
+  test(`${linkType.name} component escape is one structured zero-write conflict`, {
+    skip: linkType.windowsOnly && process.platform !== "win32"
+      ? "junction 是 Windows 专属真实文件系统门禁"
+      : false
+  }, async (t) => {
+    const workspace = await createProjectWorkspace(t, {
+      directories: [".git"],
+      files: {
+        "governance-kit.yaml": manifestForLinkedServer()
+      }
+    });
+    const outside = await mkdtemp(path.join(tmpdir(), "governance-outside-"));
+    t.after(() => rm(outside, { recursive: true, force: true }));
+    await writeFile(
+      path.join(outside, "pom.xml"),
+      "<project>spring-boot mybatis flyway</project>",
+      "utf8"
+    );
+    const linked = await createRealLink(t, {
+      target: outside,
+      linkPath: path.join(workspace, "server"),
+      type: linkType.type
+    });
+    if (!linked.supported) return;
+    const beforeWorkspace = await snapshotCompleteWorkspace(workspace);
+    const beforeOutside = await snapshotCompleteWorkspace(outside);
+
+    const result = await runCli([
+      "init", "--workspace", workspace, "--yes", "--json"
+    ]);
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stderr, "");
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.status, "conflict");
+    assert.equal(output.code, "UNSAFE_REAL_PATH");
+    assert.deepEqual(await snapshotCompleteWorkspace(workspace), beforeWorkspace);
+    assert.deepEqual(await snapshotCompleteWorkspace(outside), beforeOutside);
+  });
+}
+
+test("file symlink marker escape is one structured zero-write conflict", async (t) => {
+  const workspace = await createProjectWorkspace(t, {
+    directories: [".git", "server"],
+    files: {
+      "governance-kit.yaml": manifestForLinkedServer()
+    }
+  });
+  const outside = await mkdtemp(path.join(tmpdir(), "governance-outside-"));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  const outsidePom = path.join(outside, "pom.xml");
+  await writeFile(
+    outsidePom,
+    "<project>spring-boot mybatis flyway</project>",
+    "utf8"
+  );
+  const linked = await createRealLink(t, {
+    target: outsidePom,
+    linkPath: path.join(workspace, "server", "pom.xml"),
+    type: "file"
+  });
+  if (!linked.supported) return;
+  const beforeWorkspace = await snapshotCompleteWorkspace(workspace);
+  const beforeOutside = await snapshotCompleteWorkspace(outside);
+
+  const result = await runCli([
+    "init", "--workspace", workspace, "--yes", "--json"
+  ]);
+
+  assert.equal(result.code, 1);
+  assert.equal(result.stderr, "");
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.status, "conflict");
+  assert.equal(output.code, "UNSAFE_REAL_PATH");
+  assert.deepEqual(await snapshotCompleteWorkspace(workspace), beforeWorkspace);
+  assert.deepEqual(await snapshotCompleteWorkspace(outside), beforeOutside);
+});
+
+test("manifest file symlink returns one structured conflict without touching either side", async (t) => {
+  const workspace = await createProjectWorkspace(t, {
+    directories: [".git"],
+    files: {
+      "server/pom.xml": "<project>spring-boot mybatis flyway</project>"
+    }
+  });
+  const outside = await mkdtemp(path.join(tmpdir(), "governance-outside-"));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  const outsideManifest = path.join(outside, "governance-kit.yaml");
+  await writeFile(outsideManifest, manifestForLinkedServer(), "utf8");
+  const linked = await createRealLink(t, {
+    target: outsideManifest,
+    linkPath: path.join(workspace, "governance-kit.yaml"),
+    type: "file"
+  });
+  if (!linked.supported) return;
+  const beforeWorkspace = await snapshotCompleteWorkspace(workspace);
+  const beforeOutside = await snapshotCompleteWorkspace(outside);
+
+  const result = await runCli([
+    "init", "--workspace", workspace, "--yes", "--json"
+  ]);
+
+  assert.equal(result.code, 1);
+  assert.equal(result.stderr, "");
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.status, "conflict");
+  assert.equal(output.code, "UNSAFE_REAL_PATH");
+  assert.equal(output.report, null);
+  assert.deepEqual(await snapshotCompleteWorkspace(workspace), beforeWorkspace);
+  assert.deepEqual(await snapshotCompleteWorkspace(outside), beforeOutside);
+});
+
+test("Chinese and spaced workspace paths initialize and validate", async (t) => {
+  const workspace = await createDetectedWorkspace(t, "monorepo", {
+    prefix: "治理 项目-"
+  });
+
+  const initialized = await runCli([
+    "init", "--workspace", workspace, "--yes", "--json"
+  ]);
+  assert.equal(initialized.code, 0, initialized.stderr);
+  assert.equal(initialized.stderr, "");
+  assert.equal(JSON.parse(initialized.stdout).status, "applied");
+
+  const validated = await runCli([
+    "validate", "--workspace", workspace, "--json"
+  ]);
+  assert.equal(validated.code, 0, validated.stderr);
+  assert.equal(JSON.parse(validated.stdout).report.valid, true);
+});
+
+for (const invalid of [
+  { name: "invalid YAML", content: "components: [unterminated\n" },
+  { name: "schema-invalid YAML", content: "schemaVersion: broken\n" }
+]) {
+  for (const reconfigure of [false, true]) {
+    test(`${invalid.name} manifest is never overwritten${reconfigure ? " by reconfigure" : ""}`, async (t) => {
+      const workspace = await createDetectedWorkspace(t, "monorepo", {
+        files: { "governance-kit.yaml": invalid.content }
+      });
+      const before = await snapshotCompleteWorkspace(workspace);
+      const args = ["init", "--workspace", workspace];
+      if (reconfigure) args.push("--reconfigure");
+      args.push("--yes", "--json");
+
+      const result = await runCli(args);
+
+      assert.equal(result.code, 1);
+      assert.equal(result.stderr, "");
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.status, "conflict");
+      assert.equal(output.code, "INVALID_MANIFEST");
+      assert.deepEqual(await snapshotCompleteWorkspace(workspace), before);
+    });
+  }
+}
+
+test("reconfigure dry-run exposes a diff, writes nothing, then yes applies it", async (t) => {
+  const workspace = await createDetectedWorkspace(t, "monorepo");
+  const initialized = await runCli([
+    "init", "--workspace", workspace, "--yes", "--json"
+  ]);
+  assert.equal(initialized.code, 0, initialized.stderr);
+  const manifestPath = path.join(workspace, "governance-kit.yaml");
+  const original = await readFile(manifestPath, "utf8");
+  await writeFile(
+    manifestPath,
+    original.replace(
+      `name: ${path.basename(workspace)}`,
+      "name: legacy-project-name"
+    ),
+    "utf8"
+  );
+  const beforeDryRun = await snapshotCompleteWorkspace(workspace);
+
+  const dryRun = await runCli([
+    "init", "--workspace", workspace,
+    "--reconfigure", "--dry-run", "--json"
+  ]);
+
+  assert.equal(dryRun.code, 0, dryRun.stderr);
+  const dryRunOutput = JSON.parse(dryRun.stdout);
+  assert.equal(dryRunOutput.status, "planned");
+  assert.equal(dryRunOutput.manifestChange.category, "updated");
+  assert.match(dryRunOutput.manifestChange.diff, /^[-+]/m);
+  assert.deepEqual(await snapshotCompleteWorkspace(workspace), beforeDryRun);
+
+  const applied = await runCli([
+    "init", "--workspace", workspace,
+    "--reconfigure", "--yes", "--json"
+  ]);
+  assert.equal(applied.code, 0, applied.stderr);
+  assert.equal(JSON.parse(applied.stdout).status, "applied");
+  assert.equal(await readFile(manifestPath, "utf8"), original);
+});
+
+for (const fixture of [
+  {
+    name: "empty workspace",
+    expectedCode: "NO_PROJECT_FOUND",
+    files: {}
+  },
+  {
+    name: "unsupported project",
+    expectedCode: "UNSUPPORTED_PROJECT",
+    files: { "README.md": "# existing unsupported project\n" }
+  }
+]) {
+  test(`${fixture.name} returns a stable unsupported reason and writes nothing`, async (t) => {
+    const workspace = await createProjectWorkspace(t, {
+      directories: [".git"],
+      files: fixture.files
+    });
+    const before = await snapshotCompleteWorkspace(workspace);
+
+    const result = await runCli([
+      "init", "--workspace", workspace, "--yes", "--json"
+    ]);
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stderr, "");
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.status, "unsupported");
+    assert.equal(output.code, fixture.expectedCode);
+    assert.deepEqual(await snapshotCompleteWorkspace(workspace), before);
+  });
+}
