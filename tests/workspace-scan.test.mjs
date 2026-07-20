@@ -210,6 +210,48 @@ test("reports unavailable Git status without throwing", async () => {
   }]);
 });
 
+test("stops Git inspection when a custom runner aborts after returning", async () => {
+  const controller = new AbortController();
+  let called = false;
+  await assert.rejects(
+    inspectGitStates({
+      gitMarkers: [{ rootDir: "C:\\workspace" }],
+      signal: controller.signal,
+      runGit: async () => {
+        called = true;
+        controller.abort();
+        return { code: 0, stdout: "", stderr: "" };
+      }
+    }),
+    (error) => error.code === "INTERRUPTED"
+  );
+  assert.equal(called, true);
+});
+
+test("stops context Git discovery when aborted during parent traversal", async (t) => {
+  const workspace = await createProjectWorkspace(t, {
+    files: { "component/index.js": "" }
+  });
+  const controller = new AbortController();
+  let called = false;
+  const pending = inspectContextGitStates({
+    workspaceDir: workspace,
+    components: { app: { rootDir: path.join(workspace, "component") } }
+  }, {
+    signal: controller.signal,
+    runGit: async () => {
+      called = true;
+      return { code: 0, stdout: "", stderr: "" };
+    }
+  });
+  queueMicrotask(() => controller.abort());
+  await assert.rejects(
+    pending,
+    (error) => error.code === "INTERRUPTED"
+  );
+  assert.equal(called, false);
+});
+
 test("finds and deduplicates nearest Git markers for context components", async (t) => {
   const workspace = await createProjectWorkspace(t, {
     files: { ".git/HEAD": "ref: refs/heads/main\n", "apps/a/index.js": "", "apps/b/index.js": "" }
@@ -226,6 +268,33 @@ test("finds and deduplicates nearest Git markers for context components", async 
   assert.deepEqual(states, [{ rootDir: workspace, available: true, dirty: false, warning: null }]);
 });
 
+test("rejects an external junction component before Git can inspect it", async (t) => {
+  const workspace = await createProjectWorkspace(t);
+  const externalRepository = await createProjectWorkspace(t);
+  await initializeRepository(externalRepository);
+  const linkedComponent = path.join(workspace, "linked-component");
+  if (!await createDirectoryLink(t, externalRepository, linkedComponent)) return;
+
+  const before = await snapshotGitIndex(externalRepository);
+  let runGitCalled = false;
+  await assert.rejects(
+    inspectContextGitStates({
+      workspaceDir: workspace,
+      components: { app: { rootDir: linkedComponent } }
+    }, {
+      runGit: async () => {
+        runGitCalled = true;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+    }),
+    (error) => error.code === "UNSAFE_REAL_PATH"
+  );
+  const after = await snapshotGitIndex(externalRepository);
+  assert.equal(runGitCalled, false);
+  assert.deepEqual(after, before);
+  await assert.rejects(access(path.join(await resolveGitDir(externalRepository), "index.lock")));
+});
+
 test("real Git status does not refresh index or create index.lock", async (t) => {
   const repository = await createProjectWorkspace(t);
   await initializeRepository(repository);
@@ -236,6 +305,18 @@ test("real Git status does not refresh index or create index.lock", async (t) =>
   assert.equal(states[0].available, true, "默认 Git 命令必须可被当前 Windows 环境发现");
   assert.deepEqual(after, before);
   await assert.rejects(access(path.join(await resolveGitDir(repository), "index.lock")));
+});
+
+test("normalizes an aborted default Git process", async (t) => {
+  const repository = await createProjectWorkspace(t);
+  await initializeRepository(repository);
+  const controller = new AbortController();
+  const pending = inspectGitStates({
+    gitMarkers: [{ rootDir: repository }],
+    signal: controller.signal
+  });
+  queueMicrotask(() => controller.abort());
+  await assert.rejects(pending, (error) => error.code === "INTERRUPTED");
 });
 
 test("real worktree Git status preserves the resolved worktree index", async (t) => {
