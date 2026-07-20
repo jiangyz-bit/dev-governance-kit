@@ -13,6 +13,7 @@ export async function createProjectContext({
   workspaceDir,
   kitRoot,
   manifest,
+  catalog,
   requireComponentDirs = false,
   signal
 }) {
@@ -21,13 +22,13 @@ export async function createProjectContext({
   const resolvedKitRoot = path.resolve(kitRoot);
   validateSchema("governance-kit", manifest);
   throwIfAborted(signal);
-  const catalog = await loadCatalog(resolvedKitRoot);
+  const resolvedCatalog = catalog ?? await loadCatalog(resolvedKitRoot);
   throwIfAborted(signal);
   const components = {};
 
   for (const [type, component] of Object.entries(manifest.components)) {
     throwIfAborted(signal);
-    const profile = catalog.profiles.get(component.profile);
+    const profile = resolvedCatalog.profiles.get(component.profile);
     if (!profile) {
       throw new GovernanceError("PROFILE_NOT_FOUND", `Profile 不存在：${component.profile}`, {
         component: type,
@@ -81,9 +82,23 @@ export async function createProjectContext({
     kitRoot: resolvedKitRoot,
     workspaceDir: resolvedWorkspace,
     manifest,
-    catalog,
+    catalog: resolvedCatalog,
     components
   };
+}
+
+export async function readProjectManifest(
+  workspaceDir,
+  { signal } = {}
+) {
+  const resolvedWorkspace = path.resolve(workspaceDir);
+  throwIfAborted(signal);
+  const manifest = await readYamlFile(
+    path.join(resolvedWorkspace, "governance-kit.yaml")
+  );
+  throwIfAborted(signal);
+  validateSchema("governance-kit", manifest);
+  return manifest;
 }
 
 export async function loadProjectManifest(
@@ -92,13 +107,16 @@ export async function loadProjectManifest(
   { requireComponentDirs = false, signal } = {}
 ) {
   const resolvedWorkspace = path.resolve(workspaceDir);
+  const resolvedKitRoot = path.resolve(kitRoot);
+  const manifest = await readProjectManifest(resolvedWorkspace, { signal });
   throwIfAborted(signal);
-  const manifest = await readYamlFile(path.join(resolvedWorkspace, "governance-kit.yaml"));
+  const catalog = await loadCatalog(resolvedKitRoot);
   throwIfAborted(signal);
   return createProjectContext({
     workspaceDir: resolvedWorkspace,
-    kitRoot,
+    kitRoot: resolvedKitRoot,
     manifest,
+    catalog,
     requireComponentDirs,
     signal
   });

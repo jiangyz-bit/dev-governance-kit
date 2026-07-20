@@ -1,8 +1,12 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadCatalog } from "./catalog.mjs";
 import { GovernanceError } from "./errors.mjs";
-import { loadProjectManifest } from "./manifest.mjs";
+import {
+  createProjectContext,
+  readProjectManifest
+} from "./manifest.mjs";
 import { buildApplyPlan } from "./planner.mjs";
 import {
   renderStatusRegistry,
@@ -121,12 +125,9 @@ export async function validateWorkspace({
     errors: []
   };
 
-  let context;
-  let plan;
+  let manifest;
   try {
-    context = await loadProjectManifest(workspaceDir, kitRoot, { signal });
-    throwIfAborted(signal);
-    plan = await buildApplyPlan(context);
+    manifest = await readProjectManifest(workspaceDir, { signal });
     throwIfAborted(signal);
   } catch (error) {
     if (isInterrupted(error, signal)) throw interruptedError();
@@ -136,6 +137,31 @@ export async function validateWorkspace({
     }
     throw error;
   }
+
+  const catalog = await loadCatalog(path.resolve(kitRoot));
+  throwIfAborted(signal);
+
+  let context;
+  try {
+    context = await createProjectContext({
+      workspaceDir,
+      kitRoot,
+      manifest,
+      catalog,
+      signal
+    });
+    throwIfAborted(signal);
+  } catch (error) {
+    if (isInterrupted(error, signal)) throw interruptedError();
+    if (error instanceof GovernanceError) {
+      report.errors.push(error.toJSON());
+      return report;
+    }
+    throw error;
+  }
+
+  const plan = await buildApplyPlan(context);
+  throwIfAborted(signal);
 
   for (const operation of plan.operations) {
     throwIfAborted(signal);

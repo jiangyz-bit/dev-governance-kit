@@ -6,6 +6,7 @@ import {
   createApplyPreview,
   executeApplyPreview
 } from "./apply-preview.mjs";
+import { loadCatalog } from "./catalog.mjs";
 import { GovernanceError } from "./errors.mjs";
 import {
   assertRealPathInside,
@@ -25,7 +26,7 @@ import {
 } from "./init-manifest.mjs";
 import {
   createProjectContext,
-  loadProjectManifest
+  readProjectManifest
 } from "./manifest.mjs";
 import {
   detectWorkspace,
@@ -61,6 +62,21 @@ const kitResourceDirectories = [
   "schemas",
   "templates"
 ];
+
+class InfrastructureFailure extends Error {
+  constructor(cause) {
+    super("governance-kit infrastructure failure", { cause });
+    this.name = "InfrastructureFailure";
+  }
+}
+
+async function loadPackagedCatalog(kitRoot) {
+  try {
+    return await loadCatalog(kitRoot);
+  } catch (error) {
+    throw new InfrastructureFailure(error);
+  }
+}
 
 function interruptedError(message = "用户中断初始化") {
   return new GovernanceError("INTERRUPTED", message);
@@ -441,7 +457,7 @@ async function planInitializationUnsafe({
   preflightTargets = preflightWritableTargets,
   signal,
   snapshotManifest = snapshotPath,
-  loadManifest = loadProjectManifest,
+  readManifest = readProjectManifest,
   validateEvidence = validateContextEvidence,
   scan = scanWorkspace,
   inspectGit = inspectGitStates,
@@ -476,19 +492,36 @@ async function planInitializationUnsafe({
 
   let existingContext;
   if (manifestSnapshot.exists) {
+    let existingManifest;
     try {
-      existingContext = await loadManifest(
+      existingManifest = await readManifest(
         resolvedWorkspace,
-        resolvedKitRoot,
-        {
-          requireComponentDirs: true,
-          signal
-        }
+        { signal }
       );
       throwIfAborted(signal);
     } catch (error) {
       if (isInterrupted(error, signal)) throw error;
-      if (isKitResourceFileSystemError(error, resolvedKitRoot)) throw error;
+      if (!isManifestInputError(error, resolvedWorkspace)) throw error;
+      return invalidManifestResult(
+        resolvedWorkspace,
+        normalizeManifestError(error)
+      );
+    }
+
+    const catalog = await loadPackagedCatalog(resolvedKitRoot);
+    throwIfAborted(signal);
+    try {
+      existingContext = await createContext({
+        workspaceDir: resolvedWorkspace,
+        kitRoot: resolvedKitRoot,
+        manifest: existingManifest,
+        catalog,
+        requireComponentDirs: true,
+        signal
+      });
+      throwIfAborted(signal);
+    } catch (error) {
+      if (isInterrupted(error, signal)) throw error;
       if (!isManifestInputError(error, resolvedWorkspace)) throw error;
       return invalidManifestResult(
         resolvedWorkspace,
@@ -564,10 +597,13 @@ async function planInitializationUnsafe({
   }
 
   const manifestContent = renderInitManifest(resolved.manifest);
+  const catalog = await loadPackagedCatalog(resolvedKitRoot);
+  throwIfAborted(signal);
   const context = await createContext({
     workspaceDir: resolvedWorkspace,
     kitRoot: resolvedKitRoot,
     manifest: resolved.manifest,
+    catalog,
     requireComponentDirs: true,
     signal
   });
@@ -598,6 +634,7 @@ export async function planInitialization(options) {
   try {
     return await planInitializationUnsafe(options);
   } catch (error) {
+    if (error instanceof InfrastructureFailure) throw error.cause;
     if (isInterrupted(error, options?.signal)) {
       return interruptedResultForPlanning(options.workspaceDir);
     }
@@ -812,16 +849,23 @@ export async function executeInitialization(plan, {
     });
     appendWritten(written, applied.written);
     throwIfAborted(signal);
-    const validation = await validate({
-      workspaceDir: plan.workspaceDir,
-      kitRoot: plan.kitRoot,
-      signal
-    });
+    let validation;
+    try {
+      validation = await validate({
+        workspaceDir: plan.workspaceDir,
+        kitRoot: plan.kitRoot,
+        signal
+      });
+    } catch (error) {
+      if (isInterrupted(error, signal)) throw error;
+      throw new InfrastructureFailure(error);
+    }
     throwIfAborted(signal, "用户在验证阶段中断");
     return validation.valid
       ? appliedResult(plan, validation, written)
       : failedValidationResult(plan, validation, written);
   } catch (error) {
+    if (error instanceof InfrastructureFailure) throw error.cause;
     if (
       !isInterrupted(error, signal)
       && (

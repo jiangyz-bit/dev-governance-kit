@@ -22,7 +22,7 @@ import { executeApplyPreview } from "../tooling/lib/apply-preview.mjs";
 import { GovernanceError } from "../tooling/lib/errors.mjs";
 import { writeUtf8Atomic } from "../tooling/lib/files.mjs";
 import { renderInitManifest } from "../tooling/lib/init-manifest.mjs";
-import { loadProjectManifest } from "../tooling/lib/manifest.mjs";
+import { readProjectManifest } from "../tooling/lib/manifest.mjs";
 import { validateWorkspace } from "../tooling/lib/validate.mjs";
 import { createProjectWorkspace } from "./helpers/project-workspace.mjs";
 
@@ -480,6 +480,89 @@ test("does not turn packaged resource EACCES into a workspace conflict", async (
   );
 });
 
+test("rethrows malformed and invalid packaged catalog entries for an existing manifest", async (t) => {
+  const cases = [
+    {
+      name: "malformed profile YAML",
+      corrupt: async (copiedKitRoot) => {
+        await writeFile(
+          path.join(
+            copiedKitRoot,
+            "profiles",
+            "java-springboot-mybatis",
+            "profile.yaml"
+          ),
+          "id: [",
+          "utf8"
+        );
+      },
+      matches: (error) => /^YAML/i.test(error?.name ?? "")
+    },
+    {
+      name: "malformed blueprint YAML",
+      corrupt: async (copiedKitRoot) => {
+        await writeFile(
+          path.join(copiedKitRoot, "blueprints", "java-react-wechat.yaml"),
+          "id: [",
+          "utf8"
+        );
+      },
+      matches: (error) => /^YAML/i.test(error?.name ?? "")
+    },
+    {
+      name: "schema-invalid profile",
+      corrupt: async (copiedKitRoot) => {
+        await writeFile(
+          path.join(
+            copiedKitRoot,
+            "profiles",
+            "java-springboot-mybatis",
+            "profile.yaml"
+          ),
+          "id: INVALID\n",
+          "utf8"
+        );
+      },
+      matches: (error) => error?.code === "SCHEMA_INVALID"
+    },
+    {
+      name: "duplicate profile ID",
+      corrupt: async (copiedKitRoot) => {
+        await cp(
+          path.join(
+            copiedKitRoot,
+            "profiles",
+            "java-springboot-mybatis"
+          ),
+          path.join(copiedKitRoot, "profiles", "duplicate-profile"),
+          { recursive: true }
+        );
+      },
+      matches: (error) => error?.code === "DUPLICATE_CATALOG_ID"
+    }
+  ];
+
+  for (const entry of cases) {
+    await t.test(entry.name, async (t) => {
+      const workspaceDir = await createSupportedWorkspace(t, {
+        manifest: true
+      });
+      const copiedKitRoot = await createKitCopy(t);
+      const before = await snapshotWorkspace(workspaceDir);
+      await entry.corrupt(copiedKitRoot);
+
+      await assert.rejects(
+        planInitialization({
+          workspaceDir,
+          kitRoot: copiedKitRoot
+        }),
+        entry.matches
+      );
+      assert.deepEqual(await snapshotWorkspace(workspaceDir), before);
+    });
+  }
+});
+
 test("permission preflight checks every writable target once and leaves the workspace unchanged", async (t) => {
   const workspaceDir = await createSupportedWorkspace(t);
   const before = await snapshotWorkspace(workspaceDir);
@@ -870,9 +953,9 @@ test("returns interrupted when existing-manifest loading aborts after its snapsh
     workspaceDir,
     kitRoot,
     signal: controller.signal,
-    loadManifest: async (...args) => {
+    readManifest: async (...args) => {
       controller.abort();
-      return loadProjectManifest(...args);
+      return readProjectManifest(...args);
     }
   });
 
@@ -988,6 +1071,30 @@ test("execution rethrows missing kit resources discovered during validation", as
       error.code === "ENOENT"
       && path.resolve(error.path) === path.resolve(missingDirectory)
     )
+  );
+});
+
+test("execution rethrows packaged catalog validation errors discovered after planning", async (t) => {
+  const workspaceDir = await createSupportedWorkspace(t);
+  const copiedKitRoot = await createKitCopy(t);
+  const plan = await planInitialization({
+    workspaceDir,
+    kitRoot: copiedKitRoot
+  });
+  await writeFile(
+    path.join(
+      copiedKitRoot,
+      "profiles",
+      "java-springboot-mybatis",
+      "profile.yaml"
+    ),
+    "id: INVALID\n",
+    "utf8"
+  );
+
+  await assert.rejects(
+    executeInitialization(plan),
+    (error) => error?.code === "SCHEMA_INVALID"
   );
 });
 
